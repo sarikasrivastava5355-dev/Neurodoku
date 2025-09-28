@@ -1,7 +1,7 @@
 import streamlit as st
 from PIL import Image
 import numpy as np
-import cv2
+import cv2 as cv
 
 def set_custom_style():
     """Applies custom CSS for background and text styles."""
