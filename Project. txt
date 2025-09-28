@@ -1,3 +1,5 @@
-streamlit
+print("""streamlit
 opencv-python
 Pillow
+""")
+
