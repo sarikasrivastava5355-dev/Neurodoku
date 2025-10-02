@@ -2,7 +2,7 @@ import streamlit as st
 from PIL import Image
 import numpy as np
 import cv2 
-
+import pandas as pd
 def set_custom_style():
     """Applies custom CSS for background and text styles."""
     custom_css = """
@@ -160,9 +160,13 @@ if st.session_state.puzzle_loaded:
             st.session_state.solution_provided = True
             st.session_state.hint_provided = False
             if solved_result:
-                st.write("Here is the full solution:")
-                for row in solved_result:
-                    st.write(row)
+                st.success("Here’s the full solution:")
+
+                # Convert solution into a DataFrame for neat table display
+                df = pd.DataFrame(st.session_state.solution)
+
+                # Show as a styled table
+                st.table(df)
             else:
                 st.write("Could not solve the puzzle.")
         else:
