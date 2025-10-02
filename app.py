@@ -162,11 +162,17 @@ if st.session_state.puzzle_loaded:
             if solved_result:
                 st.success("Here’s the full solution:")
 
-                # Convert solution into a DataFrame for neat table display
-                df = pd.DataFrame(st.session_state.solution)
+                # Convert solution into DataFrame for grid display
+                solution_grid = np.array(st.session_state.solution)
+                df = pd.DataFrame(solution_grid)
 
-                # Show as a styled table
-                st.table(df)
+                # Show as a styled Sudoku grid
+                st.dataframe(
+                    df.style.set_table_styles(
+                        [{'selector': 'th', 'props': [('font-size', '16px'), ('text-align', 'center')]},
+                         {'selector': 'td', 'props': [('font-size', '20px'), ('text-align', 'center')]}]
+                    ).set_properties(**{'width': '30px', 'height': '30px'})
+                )
             else:
                 st.write("Could not solve the puzzle.")
         else:
