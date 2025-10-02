@@ -162,9 +162,19 @@ if st.session_state.puzzle_loaded:
             if solved_result:
                 st.success("Here’s the full solution:")
 
-                # Convert solution into DataFrame for grid display
-                solution_grid = np.array(st.session_state.solution)
+                # Ensure solution is converted into a 9x9 grid
+                solution_result = st.session_state.solution
+                # If it's a dict, convert to list of lists
+                if isinstance(solution_result, dict):
+                    # Flatten dict into rows
+                    solution_grid = [[solution_result.get((r, c), 0) for c in range(9)] for r in range(9)]
+                else:
+                    solution_grid = solution_result  # already a list of lists
+
+                # Make DataFrame
                 df = pd.DataFrame(solution_grid)
+
+ 
 
                 # Show as a styled Sudoku grid
                 st.dataframe(
