@@ -3,11 +3,12 @@ from PIL import Image
 import numpy as np
 import cv2
 import pytesseract
+pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 import re
 
 # Set the Tesseract executable path (important for Colab/non-standard installs)
 # In Colab, tesseract is usually in /usr/bin/tesseract
-pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
+
 
 def set_custom_style():
     """Applies custom CSS for background, text styles, sizes, and colors."""
