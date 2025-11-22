@@ -1,7 +1,6 @@
 streamlit
 numpy
 pillow
-opencv-contrib-python-headless==4.5.5.64
 pytesseract
 pandas
 scikit-image
