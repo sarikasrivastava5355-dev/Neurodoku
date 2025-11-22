@@ -1,8 +1,7 @@
 streamlit
-Pillow
 numpy
-protobuf==3.20.
+pillow
+opencv-python-headless==4.7.0.72
 pytesseract
 pandas
-tensorflow
 scikit-image
