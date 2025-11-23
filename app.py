@@ -216,8 +216,11 @@ if uploaded:
 
         st.info(f"Detected {n}×{n} puzzle • {ratio*100:.1f}% digits detected")
 
-        grid_str=convert_to_strings(grid,n)
-        display_grid(grid_str,"Extracted Grid")
+        st.subheader("🧩 Extracted Grid")
+        grid_str = convert_to_strings(grid, n)
+        display_grid(grid_str, "Extracted Grid (OCR Result)")
+        st.info("If some cells are empty, OCR couldn't detect them. You can still Solve or use Hint.")
+
 
         if ratio<0.12:
             st.warning("Very few digits detected. Upload a clearer image.")
@@ -228,9 +231,11 @@ if uploaded:
                 br,bc=box_shape(n)
                 ok=solve(board,n,br,bc)
                 if ok:
-                    disp=convert_to_strings(board,n)
-                    display_grid(disp,"Solved Grid")
-                    st.session_state["solution"]=board
+                     disp=convert_to_strings(board,n)
+                     display_grid(disp,"Solved Grid")
+                     st.session_state["solution"]=board
+                     st.session_state["last_action"] = "solved"
+
                 else:
                     st.error("Sudoku not solvable (OCR error likely).")
 
@@ -252,6 +257,8 @@ if uploaded:
                             val_disp = format(val,"X") if n==16 and val>9 else val
                             display_grid(convert_to_strings(sol,n),"Hint (Highlighted)",highlight=(i,j))
                             st.info(f"Hint → place **{val_disp}** at row {i+1}, column {j+1}")
+                            st.session_state["last_action"] = "hint"
+
                             st.stop()
                 st.success("Puzzle already complete.")
 
@@ -259,5 +266,30 @@ if uploaded:
                 for k in list(st.session_state.keys()):
                     del st.session_state[k]
                 st.experimental_rerun()
+                # ----- Continue or start new puzzle -----
+if "action_done" not in st.session_state:
+    st.session_state["action_done"] = False
+
+if st.session_state.get("last_action") in ["solved", "hint"]:
+    st.markdown("---")
+    st.subheader("What do you want to do next?")
+
+    choice = st.radio(
+        "Choose an option:",
+        ["Continue with current puzzle", "Upload a new puzzle"],
+        key="next_step"
+    )
+
+    if st.button("Proceed"):
+        if choice == "Continue with current puzzle":
+            st.success("Continuing with current puzzle...")
+            st.experimental_rerun()
+
+        else:
+            # Clear session and restart app fresh
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            st.experimental_rerun()
+
 
 st.markdown("</div>", unsafe_allow_html=True)
