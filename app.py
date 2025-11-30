@@ -1,46 +1,83 @@
-# app_C.py — NEURODOKU (Subtle notebook texture)
-# Same behavior as app_A.py but with subtle texture and slightly more minimalist look
+# app.py — NEURODOKU (Updated: improved OCR preprocessing, centered round logo, full notebook background)
+# Put 'logo.png' in repo root (medium size recommended). Requirements:
+# streamlit, numpy, pillow, pytesseract, opencv-python-headless
 
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps, ImageFilter, ImageDraw
 import numpy as np
-import cv2, pytesseract, re, math, time
+import cv2, pytesseract, math, time, io, os, re
+
+# Path to tesseract on Streamlit Cloud
 pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 st.set_page_config(page_title="NEURODOKU", layout="centered")
 
-# ---- Subtle textured background (very light) ----
+# ------------------ Notebook-style full-page CSS ------------------
 st.markdown("""
 <style>
-body { background: #ffffff; font-family:'Segoe UI', Roboto, sans-serif; color:#0b2540; }
-.main-bg { background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400"><rect fill=%22%23fafafa%22 width="400" height="400"/></svg>'); }
-.header { text-align:center; margin-top:10px; }
-.logo { height:160px; width:auto; display:block; margin-left:auto; margin-right:auto; }
-.title { font-size:36px; font-weight:800; text-align:center; color:#0b2540; margin-top:6px; }
-.card { background:#fff; padding:16px; border-radius:10px; width:86%; margin-left:auto; margin-right:auto; box-shadow: 0 6px 18px rgba(18,52,80,0.06); border:1px solid rgba(10,30,50,0.03); }
-.btn { margin:6px; }
-.note { color:#456; text-align:center; font-size:13px; margin-top:8px; }
+/* Full-page notebook look */
+html, body {
+  background: #fbf8ef;
+  color: #0b2540;
+  font-family: "Segoe UI", Roboto, Arial, sans-serif;
+}
+body {
+  background-image:
+    linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.0) 1px, transparent 1px);
+  background-size: 100% 36px, 100% 100%;
+}
+.header { text-align:center; margin-top:14px; margin-bottom:8px; }
+.logo-wrap { display:flex; justify-content:center; align-items:center; margin-bottom:6px; }
+.title { font-weight:900; font-size:36px; color:#083048; letter-spacing:1px; text-align:center; margin-bottom:4px; }
+.card { background: rgba(255,255,255,0.8); padding:18px; border-radius:12px; width:92%; margin-left:auto; margin-right:auto; box-shadow: 0 8px 30px rgba(10,30,50,0.06); border:1px solid rgba(10,30,50,0.03); }
+.btn { margin:8px; }
+.grid-btn > button { background: linear-gradient(90deg,#2b6ea3,#1e73b7); color:white; font-weight:700; border-radius:10px; padding:10px 18px; }
+.action-btn > button { background: linear-gradient(90deg,#0b8f5c,#2e7d32); color:white; font-weight:700; border-radius:10px; padding:10px 18px; }
+.hint-btn > button { background: linear-gradient(90deg,#d97706,#f59e0b); color:white; font-weight:700; border-radius:10px; padding:10px 18px; }
+.small-note { color:#264653; text-align:center; margin-top:6px; font-size:13px; }
 </style>
 """, unsafe_allow_html=True)
 
-logo_path = "logo.png"
-try:
-    st.image(logo_path, width=160)
-except:
-    pass
+# ------------------ Logo helper: circular crop + display center ------------------
+def load_and_circle_logo(path, size_px=160):
+    try:
+        im = Image.open(path).convert("RGBA")
+    except Exception:
+        return None
+    # create circle mask and paste
+    w,h = im.size
+    s = min(w,h)
+    # center crop square
+    left = (w-s)//2; top = (h-s)//2
+    im = im.crop((left, top, left+s, top+s)).resize((size_px, size_px), Image.LANCZOS)
+    # circle mask
+    mask = Image.new("L", (size_px, size_px), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0,0,size_px, size_px), fill=255)
+    im.putalpha(mask)
+    # return bytes for st.image
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
+logo_buf = load_and_circle_logo("logo.png", size_px=160)
+st.markdown("<div class='header'>", unsafe_allow_html=True)
+if logo_buf:
+    st.image(logo_buf, width=160)
 st.markdown("<div class='title'>NEURODOKU</div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
+
 st.markdown("<div class='card'>", unsafe_allow_html=True)
 
-# (Functions are same as app_A.py) — for brevity copy the helper functions and flow from app_A.py
-# We'll include the same helper functions and flow but with subtle styling — copy/paste those functions below.
+# ------------------ Image processing and OCR helpers ------------------
 
-# -------------------- Helper functions (same as app_A) --------------------
 def find_largest_quad(gray):
     if gray is None: return None
-    b = cv2.GaussianBlur(gray, (5,5), 0)
-    e = cv2.Canny(b, 50, 150)
-    cnts, _ = cv2.findContours(e, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    blur = cv2.GaussianBlur(gray, (5,5), 0)
+    edged = cv2.Canny(blur, 30, 150)
+    cnts, _ = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts: return None
     cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
     for c in cnts[:8]:
@@ -54,63 +91,119 @@ def order_pts(pts):
     rect = np.zeros((4,2), dtype="float32")
     s = pts.sum(axis=1)
     rect[0] = pts[np.argmin(s)]; rect[2] = pts[np.argmax(s)]
-    d = np.diff(pts, axis=1); rect[1] = pts[np.argmin(d)]; rect[3] = pts[np.argmax(d)]
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]; rect[3] = pts[np.argmax(diff)]
     return rect
 
-def warp_to_square(gray, pts, min_side=240):
+def warp_to_square(img, pts, min_side=360):
     rect = order_pts(pts)
     (tl,tr,br,bl) = rect
-    widthA = np.linalg.norm(br-bl); widthB = np.linalg.norm(tr-tl)
-    heightA = np.linalg.norm(tr-br); heightB = np.linalg.norm(tl-bl)
+    widthA = np.linalg.norm(br-bl)
+    widthB = np.linalg.norm(tr-tl)
+    heightA = np.linalg.norm(tr-br)
+    heightB = np.linalg.norm(tl-bl)
     side = int(max(widthA, widthB, heightA, heightB))
     if side < min_side: side = min_side
     dst = np.array([[0,0],[side-1,0],[side-1,side-1],[0,side-1]], dtype="float32")
     M = cv2.getPerspectiveTransform(rect, dst)
-    return cv2.warpPerspective(gray, M, (side, side))
+    return cv2.warpPerspective(img, M, (side, side))
 
-def ocr_cell(img_cell):
+def remove_grid_lines(gray):
+    # remove both vertical and horizontal lines using morphological operations
+    # gray should be binary (0/255)
+    h, w = gray.shape
+    # detect vertical lines
+    kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, h//40)))
+    vertical = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel_v, iterations=1)
+    # detect horizontal lines
+    kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w//40), 1))
+    horizontal = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel_h, iterations=1)
+    # combine
+    lines = cv2.bitwise_or(vertical, horizontal)
+    # subtract lines from image: keep digits
+    cleaned = cv2.subtract(gray, lines)
+    # further remove small noise
+    cleaned = cv2.medianBlur(cleaned, 3)
+    return cleaned
+
+def preprocess_for_ocr(warp_rgb):
+    # Input warp_rgb: BGR or RGB image (numpy)
+    if warp_rgb is None: return None
+    gray = cv2.cvtColor(warp_rgb, cv2.COLOR_BGR2GRAY)
+    # enhance contrast
+    gray = cv2.equalizeHist(gray)
+    # adaptive threshold to get binary
+    th = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                               cv2.THRESH_BINARY_INV, 25, 12)
+    # remove grid lines
+    cleaned = remove_grid_lines(th)
+    # thicken digits a bit (dilation)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
+    thick = cv2.dilate(cleaned, kernel, iterations=1)
+    # small opening to remove specks
+    kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2,2))
+    final = cv2.morphologyEx(thick, cv2.MORPH_OPEN, kernel2, iterations=1)
+    return final  # binary image with digits white on black background
+
+def ocr_cell_from_binary(bin_img_cell, n):
+    # bin_img_cell: binary image with digits white (255) on black (0)
     try:
-        if img_cell is None or img_cell.size==0: return ""
-        if len(img_cell.shape)==3: img_cell = cv2.cvtColor(img_cell, cv2.COLOR_BGR2GRAY)
-        h,w = img_cell.shape
-        if h<6 or w<6: return ""
-        norm = cv2.equalizeHist(img_cell)
-        _, th = cv2.threshold(norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        size = 28
+        # invert to black-on-white for PIL -> tesseract better for single char
+        inv = cv2.bitwise_not(bin_img_cell)
+        # center on white canvas, upscale x2 for tesseract clarity
+        size = 56
         canvas = 255 * np.ones((size,size), dtype=np.uint8)
-        ah,aw = th.shape
-        scale = min((size-6)/max(1,aw), (size-6)/max(1,ah))
+        ah,aw = inv.shape
+        scale = min((size-8)/max(1,aw), (size-8)/max(1,ah))
         nw = max(1, int(aw*scale)); nh = max(1, int(ah*scale))
-        small = cv2.resize(th, (nw,nh))
-        xoff = (size-nw)//2; yoff = (size-nh)//2
-        canvas[yoff:yoff+nh, xoff:xoff+nw] = small
+        try:
+            small = cv2.resize(inv, (nw, nh), interpolation=cv2.INTER_AREA)
+        except:
+            small = cv2.resize(inv, (nw, nh))
+        x = (size-nw)//2; y = (size-nh)//2
+        canvas[y:y+nh, x:x+nw] = small
+        # convert to PIL
         pil = Image.fromarray(canvas)
-        cfg = '--psm 10 -c tessedit_char_whitelist=0123456789'
+        # sharpen a little
+        pil = pil.filter(ImageFilter.SHARPEN)
+        cfg = f'--psm 10 -c tessedit_char_whitelist=0123456789'
         txt = pytesseract.image_to_string(pil, config=cfg)
         txt = re.sub(r'[^0-9]', '', txt).strip()
         return txt
-    except:
+    except Exception:
         return ""
 
-def ocr_full_for_size(warp, n):
-    side = warp.shape[0]; cell = side // n
+def ocr_full_with_preprocessing(warp_bgr, n):
+    # returns grid (n x n), ratio, detected_count
+    processed_bin = preprocess_for_ocr(warp_bgr)  # digits white on black
+    side = processed_bin.shape[0]
+    cell = side // n
     grid = [[0]*n for _ in range(n)]
     detected = 0
     for i in range(n):
         for j in range(n):
             y = i*cell; x = j*cell
-            m = max(3, cell//12)
-            y1 = max(0, y+m); y2 = min(side, y+cell-m)
-            x1 = max(0, x+m); x2 = min(side, x+cell-m)
-            crop = warp[y1:y2, x1:x2] if (y2>y1 and x2>x1) else warp[y:y+cell, x:x+cell]
-            txt = ocr_cell(crop)
+            m = max(4, cell//12)
+            y1 = max(0, y + m); y2 = min(side, (i+1)*cell - m)
+            x1 = max(0, x + m); x2 = min(side, (j+1)*cell - m)
+            crop = processed_bin[y1:y2, x1:x2] if (y2>y1 and x2>x1) else processed_bin[y:y+cell, x:x+cell]
+            # skip too small
+            if crop.size == 0:
+                continue
+            # compute fraction of white pixels to decide presence
+            white_frac = np.sum(crop==255) / (crop.size+1e-9)
+            if white_frac < 0.01:
+                continue
+            txt = ocr_cell_from_binary(crop, n)
             if txt:
                 v = int(txt[0])
                 if 1 <= v <= n:
-                    grid[i][j] = v; detected += 1
+                    grid[i][j] = v
+                    detected += 1
     ratio = detected / (n*n)
     return grid, ratio, detected
 
+# ------------------ Solver (unchanged) ------------------
 def box_shape(n):
     if n==6: return 2,3
     r=int(math.sqrt(n))
@@ -119,13 +212,13 @@ def box_shape(n):
         if n%a==0: return a,n//a
     return 1,n
 
-def find_empty(board,n):
+def find_empty(board, n):
     for i in range(n):
         for j in range(n):
             if board[i][j]==0: return (i,j)
     return None
 
-def valid(board,r,c,num,n,br,bc):
+def valid(board, r, c, num, n, br, bc):
     for x in range(n):
         if board[r][x]==num or board[x][c]==num: return False
     rs=(r//br)*br; cs=(c//bc)*bc
@@ -134,62 +227,67 @@ def valid(board,r,c,num,n,br,bc):
             if board[i][j]==num: return False
     return True
 
-def solve(board,n,br,bc):
-    pos = find_empty(board,n)
+def solve(board, n, br, bc):
+    pos = find_empty(board, n)
     if not pos: return True
     r,c = pos
-    for num in range(1,n+1):
-        if valid(board,r,c,num,n,br,bc):
-            board[r][c]=num
-            if solve(board,n,br,bc): return True
-            board[r][c]=0
+    for num in range(1, n+1):
+        if valid(board, r, c, num, n, br, bc):
+            board[r][c] = num
+            if solve(board, n, br, bc): return True
+            board[r][c] = 0
     return False
 
-def display_grid(grid_given, grid_extracted, solution, n, title="Grid"):
+# ------------------ Grid display (colored) ------------------
+def display_grid_colored(grid_given, grid_extracted, solution, n, title="Grid"):
     st.write(f"### {title}")
-    html = "<table style='margin:auto;'>"
+    html = "<div style='display:flex;justify-content:center;'><table style='border-collapse:collapse;'>"
     for i in range(n):
         html += "<tr>"
         for j in range(n):
-            given = grid_given[i][j]; ext = grid_extracted[i][j]; sol = solution[i][j] if solution else None
+            given = grid_given[i][j] if grid_given else 0
+            ext = grid_extracted[i][j] if grid_extracted else 0
+            sol = solution[i][j] if solution else 0
             if given and given!=0:
-                text = str(given); color = "#000"
+                text = str(given); color="#000000"
             elif sol and sol!=0 and (ext==0 or sol!=ext):
-                text = str(sol); color = "#2e7d32"
+                text = str(sol); color="#1b5e20"  # green
             elif ext and ext!=0:
-                text = str(ext); color = "#1e88e5"
+                text = str(ext); color="#0b66b2"  # blue
             else:
-                text = ""; color = "#000"
+                text = ""; color="#000000"
             if n==9:
-                left = "3px solid #ddd" if j%3==0 else "1px solid #eee"
-                top  = "3px solid #ddd" if i%3==0 else "1px solid #eee"
+                left = "3px solid #4a4a4a" if j%3==0 else "1px solid #9aa0a6"
+                top = "3px solid #4a4a4a" if i%3==0 else "1px solid #9aa0a6"
             else:
-                left = "3px solid #ddd" if j%3==0 else "1px solid #eee"
-                top  = "2px solid #eee" if i%2==0 else "1px solid #eee"
-            cell = f"<td style='width:42px;height:42px;text-align:center;font-weight:700;color:{color};border-left:{left};border-top:{top};font-size:18px'>{text}</td>"
-            html += cell
+                left = "3px solid #4a4a4a" if j%3==0 else "1px solid #9aa0a6"
+                top = "2px solid #9aa0a6" if i%2==0 else "1px solid #9aa0a6"
+            html += f"<td style='width:44px;height:44px;text-align:center;font-weight:800;color:{color};border-left:{left};border-top:{top};font-size:20px;padding:6px'>{text}</td>"
         html += "</tr>"
-    html += "</table>"
+    html += "</table></div>"
     st.write(html, unsafe_allow_html=True)
 
-# --------- Flow (same as app_A) ----------
+# ------------------ App flow ------------------
 st.markdown("<div style='text-align:center;margin-bottom:8px;'><b>Which puzzle are you solving?</b></div>", unsafe_allow_html=True)
-col1, col2 = st.columns(2)
-selected_size=None
-with col1:
-    if st.button("6 × 6 Sudoku", key="btn6_c"): selected_size = 6
-with col2:
-    if st.button("9 × 9 Sudoku", key="btn9_c"): selected_size = 9
-if 'selected_size' not in st.session_state: st.session_state['selected_size'] = None
-if selected_size: st.session_state['selected_size'] = selected_size
-if st.session_state.get('selected_size') is None:
-    st.markdown("<div class='note'>Choose puzzle size to continue</div>", unsafe_allow_html=True)
+c1, c2 = st.columns(2)
+sel = None
+with c1:
+    if st.button("6 × 6 Sudoku", key="b6"): sel = 6
+with c2:
+    if st.button("9 × 9 Sudoku", key="b9"): sel = 9
+
+if 'selected_n' not in st.session_state: st.session_state['selected_n'] = None
+if sel: st.session_state['selected_n'] = sel
+
+if st.session_state['selected_n'] is None:
+    st.markdown("<div class='small-note'>Choose puzzle size to continue</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
-n = st.session_state['selected_size']
+n = st.session_state['selected_n']
 st.markdown(f"<div style='text-align:center;margin-top:6px;margin-bottom:6px;'><b>Selected: {n} × {n}</b></div>", unsafe_allow_html=True)
-uploaded = st.file_uploader("Upload Sudoku image (tight crop/screenshot works best)", type=["png","jpg","jpeg"])
+
+uploaded = st.file_uploader("Upload Sudoku image (tight crop / screenshot works best)", type=["png","jpg","jpeg"])
 if uploaded is None:
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
@@ -198,61 +296,73 @@ start = time.time()
 image = Image.open(uploaded).convert("RGB")
 st.image(image, caption="Uploaded image", use_column_width=True)
 arr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
-pts = find_largest_quad(gray)
+gray_full = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+pts = find_largest_quad(gray_full)
 if pts is None:
-    st.error("Could not find grid. Try tighter crop or clearer image.")
+    st.error("Could not find grid boundary automatically. Try cropping the image to the puzzle only and re-upload.")
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
-warp = warp_to_square(gray, pts)
-extracted_grid, ratio, detected = ocr_full_for_size(warp, n)
-given_grid = [[0]*n for _ in range(n)]
-st.info(f"Extracted: {detected}/{n*n} cells ({ratio*100:.1f}%)")
-display_grid(given_grid, extracted_grid, None, n, title="Extracted Grid")
 
+warp = warp_to_square(arr, pts, min_side=360)
+
+# Run OCR extraction with improved preprocessing
+extracted_grid, ratio, detected = ocr_full_with_preprocessing(warp, n)
+given_grid = [[0]*n for _ in range(n)]  # we don't try to detect "given" vs blank
+st.info(f"Extracted: {detected}/{n*n} cells ({ratio*100:.1f}%)")
+display_grid_colored(given_grid, extracted_grid, None, n, title="Extracted Grid (blue = OCR result)")
+
+# Buttons Solve / Hint
 colA, colB = st.columns(2)
 if colA.button("Solve Puzzle"):
     board = [row[:] for row in extracted_grid]
     br, bc = box_shape(n)
+    # sanitize
     for i in range(n):
         for j in range(n):
             v = board[i][j]
-            if not (1<=v<=n): board[i][j]=0
+            if not (1 <= v <= n): board[i][j] = 0
     with st.spinner("Solving..."):
-        ok = solve(board,n,br,bc)
+        ok = solve(board, n, br, bc)
     if ok:
-        display_grid(given_grid, extracted_grid, board, n, title="Solved Grid")
+        display_grid_colored(given_grid, extracted_grid, board, n, title="Solved Grid (green = solution digits)")
         st.success("Solved ✅")
     else:
-        st.error("Could not solve — OCR may have errors. Try a clearer image.")
+        st.error("Could not solve — OCR may still have errors for this image. Try a clearer crop or upload another sample.")
 
 if colB.button("Get Hint"):
     board = [row[:] for row in extracted_grid]
     br, bc = box_shape(n)
     for i in range(n):
         for j in range(n):
-            v = board[i][j]
-            if not (1 <= v <= n): board[i][j] = 0
+            if not (1 <= board[i][j] <= n): board[i][j] = 0
     with st.spinner("Computing hint..."):
-        ok = solve(board,n,br,bc)
+        ok = solve(board, n, br, bc)
     if not ok:
-        st.error("Cannot produce a hint — puzzle likely unsolvable with current OCR results.")
+        st.error("Cannot provide hint — puzzle likely unsolvable from current OCR results.")
     else:
+        # highlight first empty cell
+        found = False
         for i in range(n):
             for j in range(n):
-                if extracted_grid[i][j]==0:
-                    display_grid(given_grid, extracted_grid, board, n, title="Hint (green = solution)")
+                if extracted_grid[i][j] == 0:
+                    display_grid_colored(given_grid, extracted_grid, board, n, title="Hint (green = solution)")
                     st.info(f"Hint: place **{board[i][j]}** at row {i+1}, column {j+1}")
+                    found = True
                     break
-            else:
-                continue
-            break
+            if found: break
+        if not found:
+            st.success("No empty cell found — puzzle appears complete.")
 
+# Continue / Upload new
 st.markdown("---")
-c1,c2 = st.columns(2)
-if c1.button("Continue with Same Puzzle"): st.experimental_rerun()
-if c2.button("Upload a New Puzzle"):
-    for k in list(st.session_state.keys()): del st.session_state[k]
+cc1, cc2 = st.columns(2)
+if cc1.button("Continue with Same Puzzle"):
+    st.experimental_rerun()
+if cc2.button("Upload a New Puzzle"):
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
     st.experimental_rerun()
 
+elapsed = time.time() - start
+st.markdown(f"<div class='small-note'>Processed in {elapsed:.2f} s — preprocessing tuned for your uploaded image.</div>", unsafe_allow_html=True)
 st.markdown("</div>", unsafe_allow_html=True)
