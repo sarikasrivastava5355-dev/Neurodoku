@@ -1,8 +1,7 @@
 streamlit
 numpy
 pillow
-opencv-python-headless==4.10.0.84
+opencv-python-headless
+tensorflow>=2.11
 pytesseract
-pandas
 scikit-learn
-tensorflow 
