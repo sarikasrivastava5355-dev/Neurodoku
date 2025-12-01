@@ -3,5 +3,4 @@ numpy
 pillow
 opencv-python-headless
 tensorflow>=2.11
-pytesseract
 scikit-learn
