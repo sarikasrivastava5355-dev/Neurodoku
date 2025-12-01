@@ -1,369 +1,420 @@
+# app.py — NEURODOKU (robust mixed-input version)
+# Paste into repo root. Put logo.png in repo root. Put digit_model.h5 in repo root (optional).
+# Requirements: streamlit, numpy, pillow, opencv-python-headless, tensorflow>=2.11, pytesseract, scikit-learn
+
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 import numpy as np
-import cv2
+import cv2, os, io, time, math, re, base64
 import tensorflow as tf
-import copy # Import copy for deepcopy
+from tensorflow.keras import layers, models
+from sklearn.model_selection import train_test_split
 
-# Load the pre-trained CNN model only once into Streamlit's session state
-@st.cache_resource
-def load_cnn_model():
-    return tf.keras.models.load_model('digit_model.h5')
+# --- Config & page ---
+st.set_page_config(page_title="NEURODOKU", layout="centered")
+MODEL_PATH = "digit_model.h5"
 
-def set_custom_style():
-    """Applies custom CSS for background, text styles, sizes, and colors."""
-    custom_css = """
-    <style>
-    body {
-        background-color: beige;
-    }
-    h1 {
-        color: #4B0082; /* Indigo */
-        text-align: center; /* Center the title */
-        font-family: "Black Chancery", cursive; /* Black Chancery font style */
-        -webkit-text-stroke: 1px black; /* Black outline for the title */
-        color: white; /* White color for the title text */
-    }
-    p {
-        color: #FFB6C1; /* Light pink pastel color for welcome message */
-        text-align: center; /* Center the welcome message */
-        font-family: "High Tower Text", serif; /* High Tower font style */
-        font-size: 16px; /* Font size 16 for welcome message */
-    }
-    .stMarkdown, .stException, .stWarning, .stInfo, .stSuccess, .stError {
-        font-family: "Arial", sans-serif; /* Arial font style for other statements */
-        font-size: 12px; /* Font size 12 for other statements */
-        color: white; /* White color for statements */
-    }
-     /* Style for text inside buttons like structure */
-    .stButton>button, .stRadio > label, .stFileUploader label {
-        font-family: "Georgia", serif; /* Georgia font style for buttons and labels */
-        color: #7CFC00; /* LawnGreen - a brighter green */
-    }
+# --- Helper: embed circular logo as data URI so Streamlit won't block it ---
+def make_logo_datauri(path="logo.png", size_px=160):
+    if not os.path.exists(path):
+        return None
+    im = Image.open(path).convert("RGBA")
+    # center-crop to square
+    w,h = im.size
+    s = min(w,h)
+    left=(w-s)//2; top=(h-s)//2
+    im = im.crop((left,top,left+s,top+s)).resize((size_px,size_px), Image.LANCZOS)
+    # convert near-white to transparent
+    data = np.array(im)
+    r,g,b,a = data[:,:,0], data[:,:,1], data[:,:,2], data[:,:,3]
+    white_mask = (r>240)&(g>240)&(b>240)
+    data[white_mask,3]=0
+    im = Image.fromarray(data)
+    # circular mask
+    mask = Image.new("L", (size_px,size_px), 0)
+    draw = ImageDraw.Draw(mask); draw.ellipse((0,0,size_px,size_px), fill=255)
+    im.putalpha(mask)
+    buf = io.BytesIO(); im.save(buf, format="PNG"); buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode()
+    return f"data:image/png;base64,{b64}"
 
-    /* Add styles for other elements as needed */
-    </style>
-    """
-    st.markdown(custom_css, unsafe_allow_html=True)
+logo_data = make_logo_datauri("logo.png", 160)
 
-def order_points(pts):
-    """Orders a list of 4 points in top-left, top-right, bottom-right, bottom-left fashion."""
-    rect = np.zeros((4, 2), dtype = "float32")
-    s = pts.sum(axis = 1)
-    rect[0] = pts[np.argmin(s)]
-    rect[2] = pts[np.argmax(s)]
-    diff = np.diff(pts, axis = 1)
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
-    return rect
+# --- CSS / Notebook style header ---
+st.markdown("""
+<style>
+html, body { background:#fbf8ef; color:#0b2540; font-family:'Segoe UI', Roboto, Arial, sans-serif; }
+body { background-image: linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px); background-size: 100% 36px; }
+.header { text-align:center; margin-top:12px; margin-bottom:6px; }
+.card { background: rgba(255,255,255,0.88); padding:18px; border-radius:12px; width:92%; margin:auto; box-shadow:0 8px 30px rgba(10,30,50,0.06); border:1px solid rgba(10,30,50,0.03); }
+.title { font-weight:900; font-size:36px; text-align:center; color:#083048; margin-bottom:6px; }
+.small-note { color:#264653; text-align:center; margin-top:6px; font-size:13px; }
+button.stButton>div { font-weight:700; }
+</style>
+""", unsafe_allow_html=True)
 
-def find_sudoku_grid(image_cv):
-    """Finds the largest square contour (assumed to be the Sudoku grid) in an image."""
-    gray = cv2.cvtColor(image_cv, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+# render logo + title
+st.markdown("<div class='header'>", unsafe_allow_html=True)
+if logo_data:
+    st.markdown(f"<img src='{logo_data}' style='height:160px;width:160px;border-radius:50%;display:block;margin-left:auto;margin-right:auto;'/>", unsafe_allow_html=True)
+st.markdown("<div class='title'>NEURODOKU</div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
+st.markdown("<div class='card'>", unsafe_allow_html=True)
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    largest_contour = None
-    max_area = 0
-
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area > 1000:
-            peri = cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-
-            if len(approx) == 4:
-                if area > max_area:
-                    largest_contour = approx
-                    max_area = area
-    return largest_contour
-
-def extract_sudoku_grid(image):
-    """
-    Extracts a 9x9 Sudoku grid from an image using OpenCV for grid localization
-    and a CNN for digit recognition. Returns a 2D list representing the grid,
-    with 0 for empty cells, or None if grid not found.
-    """
-    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-
-    grid_contour = find_sudoku_grid(img_cv)
-
-    if grid_contour is None:
-        return None # No Sudoku grid found
-
-    # Get the ordered four corner points of the grid
-    pts = grid_contour.reshape(4, 2)
-    rect = order_points(pts)
-
-    # Set desired output size for the warped image (e.g., 450x450 for better cell resolution)
-    output_size = 450 # Standard size, divisible by 9
-    dst = np.array([
-        [0, 0],
-        [output_size - 1, 0],
-        [output_size - 1, output_size - 1],
-        [0, output_size - 1]], dtype = "float32")
-
-    # Compute the perspective transform matrix and then apply it
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(img_cv, M, (output_size, output_size))
-
-    # Preprocess the warped image for digit extraction
-    warped_gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-    warped_blur = cv2.GaussianBlur(warped_gray, (5, 5), 0)
-    _, warped_thresh = cv2.threshold(warped_blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
-    cell_h = output_size // 9
-    cell_w = output_size // 9
-
-    sudoku_grid = [[0 for _ in range(9)] for _ in range(9)]
-
-    cnn_model = load_cnn_model()
-
-    for r in range(9):
-        for c in range(9):
-            x1 = c * cell_w
-            y1 = r * cell_h
-            x2 = (c + 1) * cell_w
-            y2 = (r + 1) * cell_h
-
-            cell_img = warped_thresh[y1:y2, x1:x2]
-
-            cell_contours, _ = cv2.findContours(cell_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            if len(cell_contours) > 0:
-                largest_digit_contour = max(cell_contours, key=cv2.contourArea)
-
-                x_digit, y_digit, w_digit, h_digit = cv2.boundingRect(largest_digit_contour)
-
-                if w_digit < 10 or h_digit < 10 or w_digit > cell_w * 0.8 or h_digit > cell_h * 0.8:
-                    continue
-
-                pad = 4
-                x_digit_start = max(0, x_digit - pad)
-                y_digit_start = max(0, y_digit - pad)
-                x_digit_end = min(cell_img.shape[1], x_digit + w_digit + pad)
-                y_digit_end = min(cell_img.shape[0], y_digit + h_digit + pad)
-
-                digit_roi = cell_img[y_digit_start:y_digit_end, x_digit_start:x_digit_end]
-
-                if digit_roi.shape[0] > 0 and digit_roi.shape[1] > 0:
-                    digit_resized = cv2.resize(digit_roi, (28, 28), interpolation=cv2.INTER_AREA)
-                    digit_normalized = digit_resized.astype('float32') / 255.0
-                    digit_input = np.expand_dims(digit_normalized, axis=(0, -1))
-
-                    predictions = cnn_model.predict(digit_input, verbose=0)
-                    predicted_digit = np.argmax(predictions[0])
-                    confidence = np.max(predictions[0])
-
-                    if confidence > 0.9 and predicted_digit != 0:
-                        sudoku_grid[r][c] = predicted_digit
-
-    return sudoku_grid
-
-# Helper function 1: Find an empty cell
-def find_empty(grid):
-    for r in range(9):
-        for c in range(9):
-            if grid[r][c] == 0:
-                return (r, c)  # (row, col)
+# ---------------- Image processing utilities ----------------
+def find_largest_quad(gray):
+    if gray is None: return None
+    blur = cv2.GaussianBlur(gray, (5,5), 0)
+    edged = cv2.Canny(blur, 40, 150)
+    cnts, _ = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts: return None
+    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+    for c in cnts[:8]:
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02*peri, True)
+        if len(approx)==4: return approx.reshape(4,2)
     return None
 
-# Helper function 2: Check if placing a number is valid
-def is_valid(grid, num, pos):
-    row, col = pos
+def order_pts(pts):
+    rect = np.zeros((4,2), dtype="float32")
+    s = pts.sum(axis=1); rect[0]=pts[np.argmin(s)]; rect[2]=pts[np.argmax(s)]
+    d = np.diff(pts, axis=1); rect[1]=pts[np.argmin(d)]; rect[3]=pts[np.argmax(d)]
+    return rect
 
-    # Check row
-    for c in range(9):
-        if grid[row][c] == num and col != c:
-            return False
+def warp_to_square(img, pts, min_side=480):
+    rect = order_pts(pts); (tl,tr,br,bl)=rect
+    widthA=np.linalg.norm(br-bl); widthB=np.linalg.norm(tr-tl)
+    heightA=np.linalg.norm(tr-br); heightB=np.linalg.norm(tl-bl)
+    side=int(max(widthA,widthB,heightA,heightB))
+    if side < min_side: side = min_side
+    dst = np.array([[0,0],[side-1,0],[side-1,side-1],[0,side-1]], dtype="float32")
+    M = cv2.getPerspectiveTransform(rect, dst)
+    return cv2.warpPerspective(img, M, (side,side))
 
-    # Check column
-    for r in range(9):
-        if grid[r][col] == num and row != r:
-            return False
+def normalize_color(bg_img):
+    """Convert mixed-color puzzle to cleaner grayscale where digits contrast."""
+    lab = cv2.cvtColor(bg_img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    # enhance L channel
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    l2 = clahe.apply(l)
+    norm = cv2.merge((l2,a,b))
+    rgb = cv2.cvtColor(norm, cv2.COLOR_LAB2BGR)
+    gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
+    return gray
 
-    # Check 3x3 box
-    box_x = col // 3
-    box_y = row // 3
+def remove_background_and_lines(gray):
+    # adaptive threshold (invert so digits white)
+    th = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 10)
+    # morphological open to detect grid lines
+    h,w = th.shape
+    vert_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, h//40)))
+    hor_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w//40), 1))
+    vertical = cv2.morphologyEx(th, cv2.MORPH_OPEN, vert_kernel, iterations=1)
+    horizontal = cv2.morphologyEx(th, cv2.MORPH_OPEN, hor_kernel, iterations=1)
+    lines = cv2.bitwise_or(vertical, horizontal)
+    cleaned = cv2.subtract(th, lines)
+    # remove small noise and thicken digits a bit
+    cleaned = cv2.medianBlur(cleaned, 3)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(3,3))
+    thick = cv2.dilate(cleaned, kernel, iterations=1)
+    final = cv2.morphologyEx(thick, cv2.MORPH_OPEN, kernel, iterations=1)
+    return final  # white digits on black background
 
-    for r_box in range(box_y * 3, box_y * 3 + 3):
-        for c_box in range(box_x * 3, box_x * 3 + 3):
-            if grid[r_box][c_box] == num and (r_box, c_box) != pos:
-                return False
+# ---------------- CNN model helpers ----------------
+def build_small_cnn():
+    model = models.Sequential([
+        layers.Input(shape=(28,28,1)),
+        layers.Conv2D(32,(3,3),activation='relu'),
+        layers.BatchNormalization(),
+        layers.MaxPool2D(),
+        layers.Conv2D(64,(3,3),activation='relu'),
+        layers.BatchNormalization(),
+        layers.MaxPool2D(),
+        layers.Flatten(),
+        layers.Dense(128, activation='relu'),
+        layers.Dropout(0.3),
+        layers.Dense(10, activation='softmax')
+    ])
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    return model
 
+def load_model_quiet(path=MODEL_PATH):
+    if os.path.exists(path):
+        try:
+            m = tf.keras.models.load_model(path)
+            # compile to suppress the absl warning (harmless) and build metrics
+            m.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+            return m
+        except Exception as e:
+            st.warning(f"Failed to load model: {e}")
+            return None
+    return None
+
+# ---------------- Extract using CNN with strong preprocessing ----------------
+def ocr_with_cnn(warp_bgr, n, model):
+    bin_img = remove_background_and_lines(normalize_color(warp_bgr))
+    side = bin_img.shape[0]; cell = side // n
+    grid = [[0]*n for _ in range(n)]
+    detected = 0
+    for i in range(n):
+        for j in range(n):
+            y=i*cell; x=j*cell
+            m = max(4, cell//12)
+            y1=max(0,y+m); y2=min(side,(i+1)*cell-m)
+            x1=max(0,x+m); x2=min(side,(j+1)*cell-m)
+            crop = bin_img[y1:y2, x1:x2] if (y2>y1 and x2>x1) else bin_img[y:y+cell, x:x+cell]
+            if crop.size==0: continue
+            white_frac = np.sum(crop==255)/(crop.size+1e-9)
+            if white_frac < 0.01: continue
+            # prepare 28x28 input for model
+            inv = cv2.bitwise_not(crop)
+            size=28
+            canvas = 255*np.ones((size,size), dtype=np.uint8)
+            ah,aw = inv.shape
+            scale = min((size-6)/max(1,aw), (size-6)/max(1,ah))
+            nw = max(1,int(aw*scale)); nh = max(1,int(ah*scale))
+            try:
+                small = cv2.resize(inv, (nw,nh), interpolation=cv2.INTER_AREA)
+            except:
+                small = cv2.resize(inv, (nw,nh))
+            xoff=(size-nw)//2; yoff=(size-nh)//2
+            canvas[yoff:yoff+nh, xoff:xoff+nw] = small
+            arr = canvas.astype('float32')/255.0; arr = arr.reshape(1,28,28,1)
+            pred = model.predict(arr, verbose=0)
+            cls = int(np.argmax(pred, axis=1)[0])
+            # if model is unsure (very low prob) we skip
+            if np.max(pred) < 0.5:
+                # low confidence — skip (will be 0)
+                continue
+            grid[i][j] = cls
+            detected += 1
+    ratio = detected/(n*n)
+    return grid, ratio, detected
+
+# ---------------- Fallback OCR (tesseract) ----------------
+import pytesseract
+pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
+
+def ocr_cell_tesseract(cell_img):
+    try:
+        pil = Image.fromarray(cell_img)
+        cfg = '--psm 10 -c tessedit_char_whitelist=0123456789'
+        txt = pytesseract.image_to_string(pil, config=cfg)
+        txt = re.sub(r'[^0-9]','',txt).strip()
+        return txt
+    except Exception:
+        return ""
+
+def ocr_with_tesseract(warp_bgr, n):
+    bin_img = remove_background_and_lines(normalize_color(warp_bgr))
+    side = bin_img.shape[0]; cell = side // n
+    grid = [[0]*n for _ in range(n)]; detected=0
+    for i in range(n):
+        for j in range(n):
+            y=i*cell; x=j*cell
+            m=max(4,cell//12)
+            y1=max(0,y+m); y2=min(side,(i+1)*cell-m)
+            x1=max(0,x+m); x2=min(side,(j+1)*cell-m)
+            crop = bin_img[y1:y2, x1:x2] if (y2>y1 and x2>x1) else bin_img[y:y+cell, x:x+cell]
+            if crop.size==0: continue
+            white_frac = np.sum(crop==255)/(crop.size+1e-9)
+            if white_frac < 0.01: continue
+            inv = cv2.bitwise_not(crop)
+            # center and resize for tesseract
+            size=28; canvas = 255*np.ones((size,size),dtype=np.uint8)
+            ah,aw = inv.shape
+            scale = min((size-6)/max(1,aw),(size-6)/max(1,ah))
+            nw = max(1,int(aw*scale)); nh = max(1,int(ah*scale))
+            try: small=cv2.resize(inv,(nw,nh),interpolation=cv2.INTER_AREA)
+            except: small=cv2.resize(inv,(nw,nh))
+            xoff=(size-nw)//2; yoff=(size-nh)//2
+            canvas[yoff:yoff+nh, xoff:xoff+nw]=small
+            txt = ocr_cell_tesseract(canvas)
+            if txt:
+                v=int(txt[0]); grid[i][j]=v; detected+=1
+    ratio = detected/(n*n)
+    return grid, ratio, detected
+
+# ---------------- Solver functions ----------------
+def box_shape(n):
+    if n==6: return 2,3
+    r=int(math.sqrt(n))
+    if r*r==n: return r,r
+    for a in range(r,0,-1):
+        if n%a==0: return a, n//a
+    return 1,n
+
+def find_empty(board,n):
+    for i in range(n):
+        for j in range(n):
+            if board[i][j]==0: return (i,j)
+    return None
+
+def valid(board,r,c,num,n,br,bc):
+    for x in range(n):
+        if board[r][x]==num or board[x][c]==num: return False
+    rs=(r//br)*br; cs=(c//bc)*bc
+    for i in range(rs, rs+br):
+        for j in range(cs, cs+bc):
+            if board[i][j]==num: return False
     return True
 
-# Main Sudoku solver function (backtracking)
-def solve(grid):
-    find = find_empty(grid)
-    if not find:
-        return True  # Puzzle solved
-    else:
-        row, col = find
-
-    for num in range(1, 10):
-        if is_valid(grid, num, (row, col)):
-            grid[row][col] = num
-
-            if solve(grid):
-                return True
-
-            grid[row][col] = 0  # Backtrack
-
+def solve(board,n,br,bc):
+    pos=find_empty(board,n)
+    if not pos: return True
+    r,c=pos
+    for num in range(1,n+1):
+        if valid(board,r,c,num,n,br,bc):
+            board[r][c]=num
+            if solve(board,n,br,bc): return True
+            board[r][c]=0
     return False
 
-def solve_sudoku(grid, get_hint=False, previous_hint=None):
-    """
-    Solves a Sudoku grid using backtracking.
-    If get_hint is True, returns a valid next step; otherwise, returns the full solution.
-    """
-    if get_hint:
-        copied_grid = copy.deepcopy(grid)
-        empty_cell = find_empty(copied_grid)
-
-        if empty_cell:
-            r, c = empty_cell
-            for num in range(1, 10):
-                if is_valid(copied_grid, num, (r, c)):
-                    return (r, c, num)
-        return None
-
-    else:
-        copied_grid = copy.deepcopy(grid)
-        if solve(copied_grid):
-            return copied_grid
-        else:
-            return None
-
-def display_grid(grid):
-    """Displays the Sudoku grid in a formatted table."""
-    st.write("Current Grid:")
-    import pandas as pd
-    display_grid_data = [[str(cell) if cell != 0 else '' for cell in row] for row in grid]
-    df_grid = pd.DataFrame(display_grid_data)
-    st.table(df_grid)
-
-
-# --- Main Streamlit App Code ---
-set_custom_style()
-
-st.title("Neurodoku")
-
-# Add the logo here
-st.image("logo.png", caption="NEURODOKU Logo", width=150)
-
-st.markdown("<p style='color: #FFB6C1; text-align: center; font-family: \"High Tower Text\", serif; font-size: 16px;'>Welcome to NEURODOKU! Your personal Sudoku assistant.</p>", unsafe_allow_html=True)
-
-
-# Initialize session state variables
-if 'puzzle_loaded' not in st.session_state:
-    st.session_state.puzzle_loaded = False
-if 'hint_provided' not in st.session_state:
-    st.session_state.hint_provided = False
-if 'solution_provided' not in st.session_state:
-    st.session_state.solution_provided = False
-if 'extracted_grid' not in st.session_state:
-    st.session_state.extracted_grid = None
-if 'solved_result' not in st.session_state:
-    st.session_state.solved_result = None
-if 'hint_result' not in st.session_state:
-    st.session_state.hint_result = None
-if 'previous_hint' not in st.session_state:
-    st.session_state.previous_hint = None
-
-
-# File uploader
-uploaded_file = st.file_uploader("Choose a Sudoku image...", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None and not st.session_state.puzzle_loaded:
-    st.session_state.puzzle_loaded = True
-    st.session_state.hint_provided = False
-    st.session_state.solution_provided = False
-    st.session_state.extracted_grid = None # Clear previous grid
-    st.session_state.solved_result = None
-    st.session_state.hint_result = None
-    st.session_state.previous_hint = None # Clear previous hint
-
-    image = Image.open(uploaded_file)
-    st.write("File uploaded and puzzle loaded successfully!")
-    st.image(image, caption="Uploaded Image", use_column_width=True)
-
-    # Extract grid using CNN model
-    with st.spinner('Extracting Sudoku grid from image using CNN...'):
-        st.session_state.extracted_grid = extract_sudoku_grid(image)
-
-    if st.session_state.extracted_grid:
-        st.write("Sudoku grid extracted:")
-        display_grid(st.session_state.extracted_grid)
-    else:
-        st.error("Could not extract Sudoku grid. Please try another image with a clear Sudoku puzzle.")
-        st.session_state.puzzle_loaded = False # Reset if extraction fails
-
-
-# Display options only if a puzzle is loaded
-if st.session_state.puzzle_loaded and st.session_state.extracted_grid:
-    # Use buttons for hint or full solution
-    col_hint, col_solution = st.columns(2)
-    with col_hint:
-        hint_button = st.button("Get a Hint")
-    with col_solution:
-        solution_button = st.button("Get Full Solution")
-
-    if hint_button:
-        st.write("Getting a hint...")
-        if st.session_state.extracted_grid:
-            # Pass the current grid to solve_sudoku for hinting
-            hint_result = solve_sudoku(st.session_state.extracted_grid, get_hint=True, previous_hint=st.session_state.previous_hint)
-            st.session_state.hint_result = hint_result
-            st.session_state.hint_provided = True
-            st.session_state.solution_provided = False
-            if hint_result:
-                st.session_state.previous_hint = hint_result # Store the provided hint
-                st.write(f"Hint: Try placing **{hint_result[2]}** at row **{hint_result[0]+1}**, column **{hint_result[1]+1}**.")
+# ---------------- Display grid ----------------
+def display_grid(grid_given, grid_extracted, solution, n, title="Grid"):
+    st.write(f"### {title}")
+    html = "<div style='display:flex;justify-content:center;'><table style='border-collapse:collapse;'>"
+    for i in range(n):
+        html += "<tr>"
+        for j in range(n):
+            given = grid_given[i][j] if grid_given else 0
+            ext = grid_extracted[i][j] if grid_extracted else 0
+            sol = solution[i][j] if solution else 0
+            if given and given!=0:
+                text=str(given); color="#000"
+            elif sol and sol!=0 and (ext==0 or sol!=ext):
+                text=str(sol); color="#1b5e20"
+            elif ext and ext!=0:
+                text=str(ext); color="#0b66b2"
             else:
-                st.write("Could not find a new hint or puzzle is already solved.")
-        else:
-            st.write("No puzzle grid available to provide a hint.")
-
-    elif solution_button:
-        st.write("Solving the full puzzle...")
-        if st.session_state.extracted_grid:
-            # Pass the extracted grid to solve_sudoku for full solution
-            solved_result = solve_sudoku(st.session_state.extracted_grid, get_hint=False)
-            st.session_state.solved_result = solved_result
-            st.session_state.solution_provided = True
-            st.session_state.hint_provided = False
-            if solved_result:
-                st.write("Here is the full solution:")
-                display_grid(solved_result)
+                text=""; color="#000"
+            if n==9:
+                left="3px solid #4a4a4a" if j%3==0 else "1px solid #9aa0a6"
+                top="3px solid #4a4a4a" if i%3==0 else "1px solid #9aa0a6"
             else:
-                st.error("Could not solve the puzzle. It might be invalid or too difficult.")
-        else:
-            st.write("No puzzle grid available to provide a solution.")
+                left="3px solid #4a4a4a" if j%3==0 else "1px solid #9aa0a6"
+                top="2px solid #9aa0a6" if i%2==0 else "1px solid #9aa0a6"
+            html += f"<td style='width:44px;height:44px;text-align:center;font-weight:800;color:{color};border-left:{left};border-top:{top};font-size:20px;padding:6px'>{text}</td>"
+        html += "</tr>"
+    html += "</table></div>"
+    st.write(html, unsafe_allow_html=True)
 
-    # Add buttons for next steps after a hint or solution is provided
-    if st.session_state.hint_provided or st.session_state.solution_provided:
-        st.write("What would you like to do next?")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Try Another Puzzle"):
-                st.session_state.puzzle_loaded = False
-                st.session_state.hint_provided = False
-                st.session_state.solution_provided = False
-                st.session_state.extracted_grid = None
-                st.session_state.solved_result = None
-                st.session_state.hint_result = None
-                st.session_state.previous_hint = None
-                st.experimental_rerun()
+# ---------------- App flow ----------------
+st.markdown("<div style='text-align:center;margin-bottom:8px;'><b>Which puzzle are you solving?</b></div>", unsafe_allow_html=True)
+c1,c2 = st.columns(2)
+sel=None
+with c1:
+    if st.button("6 × 6 Sudoku", key="b6"): sel=6
+with c2:
+    if st.button("9 × 9 Sudoku", key="b9"): sel=9
 
-        with col2:
-            if st.button("Continue with Current Puzzle"):
-                 st.session_state.hint_provided = False
-                 st.session_state.solution_provided = False
-                 st.write("Continuing with the current puzzle. Choose an option above.")
-                 st.experimental_rerun()
+if 'selected_n' not in st.session_state: st.session_state['selected_n']=None
+if sel: st.session_state['selected_n']=sel
 
-else:
-    st.write("Please upload an image of a Sudoku puzzle to get started.")
+if st.session_state['selected_n'] is None:
+    st.markdown("<div class='small-note'>Choose puzzle size to continue</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+n = st.session_state['selected_n']
+st.markdown(f"<div style='text-align:center;margin-top:6px;margin-bottom:6px;'><b>Selected: {n} × {n}</b></div>", unsafe_allow_html=True)
+
+uploaded = st.file_uploader("Upload Sudoku image (tight crop/screenshot works best)", type=["png","jpg","jpeg"])
+if uploaded is None:
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+start=time.time()
+image = Image.open(uploaded).convert("RGB")
+st.image(image, caption="Uploaded image", use_column_width=True)
+arr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+gray_full = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+pts = find_largest_quad(gray_full)
+if pts is None:
+    st.error("Could not find grid boundary automatically. Try cropping the image to puzzle only and re-upload.")
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+warp = warp_to_square(arr, pts, min_side=480)
+
+# try to load CNN model
+model = load_model_quiet(MODEL_PATH)
+used_engine = None
+grid = None; ratio=0; detected=0
+
+if model is not None:
+    try:
+        grid, ratio, detected = ocr_with_cnn(warp, n, model)
+        used_engine = "cnn"
+    except Exception as e:
+        st.warning(f"CNN extraction failed: {e}")
+        model = None
+
+# if CNN not loaded or low detection, try tesseract fallback
+if model is None or detected < (0.25 * n * n):
+    # try tesseract as fallback
+    tgrid, tratio, tdet = ocr_with_tesseract(warp, n)
+    # choose whichever extracted more
+    if tdet > detected:
+        grid, ratio, detected = tgrid, tratio, tdet
+        used_engine = "tesseract"
+    else:
+        # keep cnn result even if low
+        used_engine = "cnn" if model else "tesseract"
+
+given_grid = [[0]*n for _ in range(n)]
+st.info(f"Extracted: {detected}/{n*n} cells ({ratio*100:.1f}%) using {used_engine}")
+display_grid(given_grid, grid if grid else [[0]*n for _ in range(n)], None, n, title="Extracted Grid (blue = OCR result)")
+
+# Solve/Hint
+colS, colH = st.columns(2)
+if colS.button("Solve Puzzle"):
+    board = [row[:] for row in grid] if grid else [[0]*n for _ in range(n)]
+    br, bc = box_shape(n)
+    for i in range(n):
+        for j in range(n):
+            v = board[i][j]
+            if not (1 <= v <= n): board[i][j] = 0
+    with st.spinner("Solving..."):
+        ok = solve(board, n, br, bc)
+    if ok:
+        display_grid(given_grid, grid, board, n, title="Solved Grid (green = solution digits)")
+        st.success("Solved ✅")
+    else:
+        st.error("Could not solve — OCR likely has errors. Try a clearer crop or use another image.")
+
+if colH.button("Get Hint"):
+    board = [row[:] for row in grid] if grid else [[0]*n for _ in range(n)]
+    br, bc = box_shape(n)
+    for i in range(n):
+        for j in range(n):
+            if not (1 <= board[i][j] <= n): board[i][j] = 0
+    with st.spinner("Computing hint..."):
+        ok = solve(board, n, br, bc)
+    if not ok:
+        st.error("Cannot provide hint — puzzle likely unsolvable from detected digits.")
+    else:
+        found=False
+        for i in range(n):
+            for j in range(n):
+                if grid[i][j]==0:
+                    display_grid(given_grid, grid, board, n, title="Hint (green = solution digits)")
+                    st.info(f"Hint: place **{board[i][j]}** at row {i+1}, column {j+1}")
+                    found=True; break
+            if found: break
+        if not found:
+            st.success("No empty cell found — puzzle appears complete.")
+
+# Continue / Upload new
+st.markdown("---")
+cA, cB = st.columns(2)
+if cA.button("Continue with Same Puzzle"):
+    st.rerun()
+if cB.button("Upload a New Puzzle"):
+    for k in list(st.session_state.keys()): del st.session_state[k]
+    st.rerun()
+
+elapsed=time.time()-start
+st.markdown(f"<div class='small-note'>Processed in {elapsed:.2f} s (engine: {used_engine}).</div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
