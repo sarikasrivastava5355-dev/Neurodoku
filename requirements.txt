@@ -1,6 +1,6 @@
 streamlit
-numpy
-pillow
 opencv-python-headless
-tensorflow>=2.11
-scikit-learn
+pillow
+numpy
+matplotlib
+pytesseract
