@@ -1,200 +1,161 @@
 import streamlit as st
 import numpy as np
-import random
-from PIL import Image
+import copy
+import base64
 
-# --------------------------------------------------
-# PAGE CONFIG
-# --------------------------------------------------
-st.set_page_config(
-    page_title="NEURODOKU",
-    page_icon="🧠",
-    layout="centered"
-)
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(page_title="NEURODOKU", layout="wide")
 
-# --------------------------------------------------
-# DARK MODE TOGGLE
-# --------------------------------------------------
-dark_mode = st.toggle("🌙 Dark Mode")
-
-bg = "#1e1e1e" if dark_mode else "#f4f6fa"
-text = "#ffffff" if dark_mode else "#2b2d42"
-cell_bg = "#2a2a2a" if dark_mode else "#edf2f4"
-
-st.markdown(f"""
+# ---------------- CSS ----------------
+st.markdown("""
 <style>
-body {{
-    background-color: {bg};
-    color: {text};
-}}
-input {{
-    text-align: center;
-    font-size: 20px !important;
+button {
+    height: 60px !important;
+    font-size: 22px !important;
+    border-radius: 12px !important;
+}
+.success-box {
+    background-color: #d1fae5;
+    padding: 12px;
+    border-radius: 8px;
+    color: #065f46;
     font-weight: 600;
-    background-color: {cell_bg} !important;
-    border-radius: 6px !important;
-}}
+}
+.cell-input input {
+    text-align: center;
+    font-size: 20px;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# --------------------------------------------------
-# LOGO (CENTERED ABOVE TITLE)
-# --------------------------------------------------
-logo = Image.open("logo.png")
+# ---------------- CENTER LOGO ----------------
+def center_logo(path, width=120):
+    with open(path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode()
+    st.markdown(
+        f"""
+        <div style="display:flex; justify-content:center;">
+            <img src="data:image/png;base64,{encoded}" width="{width}">
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-c1, c2, c3 = st.columns([1, 2, 1])
-with c2:
-    st.image(logo, width=150)
+center_logo("logo.png")
+st.markdown("<h1 style='text-align:center;'>NEURODOKU</h1>", unsafe_allow_html=True)
 
-# --------------------------------------------------
-# TITLE
-# --------------------------------------------------
-st.markdown(
-    f"<h1 style='text-align:center; color:{text}; margin-top:10px;'>NEURODOKU</h1>",
-    unsafe_allow_html=True
-)
-st.markdown(
-    "<p style='text-align:center;'>Smart Sudoku Solver</p>",
-    unsafe_allow_html=True
-)
-st.write("---")
-
-# --------------------------------------------------
-# SESSION STATE
-# --------------------------------------------------
+# ---------------- SESSION STATE ----------------
 if "grid" not in st.session_state:
     st.session_state.grid = np.zeros((9, 9), dtype=int)
+    st.session_state.original = np.zeros((9, 9), dtype=int)
+    st.session_state.history = []
+    st.session_state.locked = False
+    st.session_state.hints_used = set()
+    st.session_state.selected = None
+    st.session_state.solved = False
 
-if "solution" not in st.session_state:
-    st.session_state.solution = None
+# ---------------- SUDOKU LOGIC ----------------
+def valid(grid, r, c, n):
+    if n in grid[r]: return False
+    if n in grid[:, c]: return False
+    br, bc = r//3*3, c//3*3
+    return n not in grid[br:br+3, bc:bc+3]
 
-if "hinted_cells" not in st.session_state:
-    st.session_state.hinted_cells = set()
-
-if "locked_cells" not in st.session_state:
-    st.session_state.locked_cells = set()
-
-if "erase_mode" not in st.session_state:
-    st.session_state.erase_mode = False
-
-# --------------------------------------------------
-# CONTROL BUTTONS
-# --------------------------------------------------
-ctrl1, ctrl2, ctrl3 = st.columns(3)
-
-with ctrl1:
-    if st.button("🧹 Erase"):
-        st.session_state.erase_mode = True
-
-with ctrl2:
-    if st.button("🔄 Reset"):
-        st.session_state.grid = np.zeros((9, 9), dtype=int)
-        st.session_state.solution = None
-        st.session_state.hinted_cells.clear()
-        st.session_state.locked_cells.clear()
-        st.session_state.erase_mode = False
-
-with ctrl3:
-    if st.button("🔒 Lock Input"):
-        st.session_state.locked_cells = {
-            (i, j) for i in range(9) for j in range(9)
-            if st.session_state.grid[i][j] != 0
-        }
-
-st.write("---")
-
-# --------------------------------------------------
-# INPUT GRID
-# --------------------------------------------------
-for i in range(9):
-    cols = st.columns(9)
-    for j in range(9):
-        with cols[j]:
-            disabled = (i, j) in st.session_state.locked_cells
-            value = "" if st.session_state.grid[i][j] == 0 else st.session_state.grid[i][j]
-
-            user_input = st.text_input(
-                "",
-                value=value,
-                key=f"cell_{i}_{j}",
-                max_chars=1,
-                disabled=disabled
-            )
-
-            if st.session_state.erase_mode and not disabled:
-                st.session_state.grid[i][j] = 0
-            elif user_input.isdigit() and user_input != "0" and not disabled:
-                st.session_state.grid[i][j] = int(user_input)
-
-# --------------------------------------------------
-# SUDOKU SOLVER LOGIC
-# --------------------------------------------------
-def is_valid(board, row, col, num):
-    if num in board[row]:
-        return False
-    if num in board[:, col]:
-        return False
-    bx, by = row // 3, col // 3
-    if num in board[bx*3:bx*3+3, by*3:by*3+3]:
-        return False
-    return True
-
-def solve(board):
-    for i in range(9):
-        for j in range(9):
-            if board[i][j] == 0:
-                for num in range(1, 10):
-                    if is_valid(board, i, j, num):
-                        board[i][j] = num
-                        if solve(board):
+def solve(grid):
+    for r in range(9):
+        for c in range(9):
+            if grid[r][c] == 0:
+                for n in range(1, 10):
+                    if valid(grid, r, c, n):
+                        grid[r][c] = n
+                        if solve(grid):
                             return True
-                        board[i][j] = 0
+                        grid[r][c] = 0
                 return False
     return True
 
-# --------------------------------------------------
-# ACTION BUTTONS
-# --------------------------------------------------
-act1, act2 = st.columns(2)
+# ---------------- GRID UI ----------------
+grid_col, control_col = st.columns([1.3, 1])
 
-with act1:
-    if st.button("🧠 Solve"):
-        board = st.session_state.grid.copy()
-        if solve(board):
-            st.session_state.solution = board
-            st.success("Sudoku solved successfully!")
-        else:
-            st.error("Invalid or unsolvable Sudoku")
-
-with act2:
-    if st.button("💡 Hint"):
-        board = st.session_state.grid.copy()
-        solved = board.copy()
-
-        if solve(solved):
-            available = [
-                (i, j) for i in range(9) for j in range(9)
-                if board[i][j] == 0 and (i, j) not in st.session_state.hinted_cells
-            ]
-            if available:
-                i, j = random.choice(available)
-                st.session_state.grid[i][j] = solved[i][j]
-                st.session_state.hinted_cells.add((i, j))
-            else:
-                st.warning("No more hints available")
-
-# --------------------------------------------------
-# DISPLAY SOLUTION
-# --------------------------------------------------
-if st.session_state.solution is not None:
-    st.write("---")
-    st.subheader("✅ Solution")
-
-    for i in range(9):
+with grid_col:
+    for r in range(9):
         cols = st.columns(9)
-        for j in range(9):
-            cols[j].markdown(
-                f"<div style='text-align:center; font-size:22px; font-weight:700; color:{text};'>"
-                f"{st.session_state.solution[i][j]}</div>",
-                unsafe_allow_html=True
-)
+        for c in range(9):
+            key = f"{r}-{c}"
+            disabled = st.session_state.locked and st.session_state.original[r][c] != 0
+            val = st.session_state.grid[r][c]
+            val = "" if val == 0 else val
+
+            if cols[c].button(str(val) if val else " ", key=key):
+                st.session_state.selected = (r, c)
+
+# ---------------- CONTROLS ----------------
+with control_col:
+
+    # TOP BUTTONS
+    b1, b2, b3 = st.columns(3)
+    if b1.button("Undo"):
+        if st.session_state.history:
+            st.session_state.grid = st.session_state.history.pop()
+    if b2.button("Erase"):
+        if st.session_state.selected:
+            r, c = st.session_state.selected
+            if not st.session_state.locked:
+                st.session_state.grid[r][c] = 0
+    if b3.button("Clear All"):
+        st.session_state.grid[:] = 0
+        st.session_state.original[:] = 0
+        st.session_state.hints_used.clear()
+        st.session_state.locked = False
+        st.session_state.solved = False
+
+    st.write("")
+
+    # NUMBER PAD
+    nums = [1,2,3,4,5,6,7,8,9]
+    for i in range(0, 9, 3):
+        cols = st.columns(3)
+        for j in range(3):
+            n = nums[i+j]
+            if cols[j].button(str(n)):
+                if st.session_state.selected:
+                    r, c = st.session_state.selected
+                    if not (st.session_state.locked and st.session_state.original[r][c] != 0):
+                        st.session_state.history.append(copy.deepcopy(st.session_state.grid))
+                        st.session_state.grid[r][c] = n
+
+    st.write("")
+
+    # LOCK BUTTON
+    if st.button("🔒 Lock Cells"):
+        st.session_state.original = copy.deepcopy(st.session_state.grid)
+        st.session_state.locked = True
+
+    st.write("")
+
+    # SOLVE & HINT
+    s1, s2 = st.columns(2)
+
+    if s1.button("Solve"):
+        temp = copy.deepcopy(st.session_state.grid)
+        if solve(temp):
+            st.session_state.grid = temp
+            st.session_state.solved = True
+
+    if s2.button("Hint"):
+        solution = copy.deepcopy(st.session_state.grid)
+        if solve(solution):
+            for r in range(9):
+                for c in range(9):
+                    if st.session_state.grid[r][c] == 0 and (r,c) not in st.session_state.hints_used:
+                        st.session_state.history.append(copy.deepcopy(st.session_state.grid))
+                        st.session_state.grid[r][c] = solution[r][c]
+                        st.session_state.hints_used.add((r,c))
+                        st.stop()
+
+# ---------------- SUCCESS MESSAGE ----------------
+if st.session_state.solved:
+    st.markdown(
+        "<div class='success-box'>✔ Success! The solution was found.</div>",
+        unsafe_allow_html=True
+    )
