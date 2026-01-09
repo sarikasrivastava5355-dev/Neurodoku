@@ -1,228 +1,200 @@
 import streamlit as st
 import numpy as np
-import cv2
+import random
 from PIL import Image
-import pytesseract
 
-# ---------------------------------------------------------
-#                    PAGE SETTINGS
-# ---------------------------------------------------------
+# --------------------------------------------------
+# PAGE CONFIG
+# --------------------------------------------------
+st.set_page_config(
+    page_title="NEURODOKU",
+    page_icon="🧠",
+    layout="centered"
+)
 
-st.set_page_config(page_title="NEURODOKU", layout="wide")
+# --------------------------------------------------
+# DARK MODE TOGGLE
+# --------------------------------------------------
+dark_mode = st.toggle("🌙 Dark Mode")
 
-# Light notebook-style background
-st.markdown("""
-    <style>
-        body {
-            background-color: #f4f5f7;
-        }
-        .main {
-            background-color: #f4f5f7;
-        }
-        .stButton>button {
-            background-color: #1f77b4;
-            color: white;
-            font-size: 16px;
-            border-radius: 8px;
-            padding: 8px 20px;
-        }
-        .title {
-            font-size: 40px;
-            text-align: center;
-            font-weight: 700;
-            color: #003366;
-        }
-        .section-title {
-            font-size: 28px;
-            font-weight: 600;
-            color: #003366;
-        }
-    </style>
+bg = "#1e1e1e" if dark_mode else "#f4f6fa"
+text = "#ffffff" if dark_mode else "#2b2d42"
+cell_bg = "#2a2a2a" if dark_mode else "#edf2f4"
+
+st.markdown(f"""
+<style>
+body {{
+    background-color: {bg};
+    color: {text};
+}}
+input {{
+    text-align: center;
+    font-size: 20px !important;
+    font-weight: 600;
+    background-color: {cell_bg} !important;
+    border-radius: 6px !important;
+}}
+</style>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-#              DISPLAY LOGO + TITLE
-# ---------------------------------------------------------
+# --------------------------------------------------
+# LOGO (CENTERED ABOVE TITLE)
+# --------------------------------------------------
+logo = Image.open("logo.png")
 
-colL, colM, colR = st.columns([1, 2, 1])
-with colM:
-    st.image("logo.png", width=180)
-    st.markdown("<div class='title'>NEURODOKU</div>", unsafe_allow_html=True)
+c1, c2, c3 = st.columns([1, 2, 1])
+with c2:
+    st.image(logo, width=150)
 
-st.write("")
+# --------------------------------------------------
+# TITLE
+# --------------------------------------------------
+st.markdown(
+    f"<h1 style='text-align:center; color:{text}; margin-top:10px;'>NEURODOKU</h1>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    "<p style='text-align:center;'>Smart Sudoku Solver</p>",
+    unsafe_allow_html=True
+)
+st.write("---")
 
-# ---------------------------------------------------------
-#                USER SELECTS PUZZLE SIZE
-# ---------------------------------------------------------
+# --------------------------------------------------
+# SESSION STATE
+# --------------------------------------------------
+if "grid" not in st.session_state:
+    st.session_state.grid = np.zeros((9, 9), dtype=int)
 
-st.subheader("Which puzzle are you solving?")
-puzzle = st.radio("", ["6 × 6 Sudoku", "9 × 9 Sudoku"], horizontal=True)
+if "solution" not in st.session_state:
+    st.session_state.solution = None
 
-grid_size = 6 if puzzle == "6 × 6 Sudoku" else 9
+if "hinted_cells" not in st.session_state:
+    st.session_state.hinted_cells = set()
 
-# ---------------------------------------------------------
-#                FILE UPLOAD SECTION
-# ---------------------------------------------------------
+if "locked_cells" not in st.session_state:
+    st.session_state.locked_cells = set()
 
-uploaded = st.file_uploader("Upload Sudoku image", type=["png", "jpg", "jpeg"])
+if "erase_mode" not in st.session_state:
+    st.session_state.erase_mode = False
 
-if uploaded:
-    img = Image.open(uploaded).convert("RGB")
-    img_np = np.array(img)
+# --------------------------------------------------
+# CONTROL BUTTONS
+# --------------------------------------------------
+ctrl1, ctrl2, ctrl3 = st.columns(3)
 
-    st.image(img_np, caption="Uploaded Image", width=350)
+with ctrl1:
+    if st.button("🧹 Erase"):
+        st.session_state.erase_mode = True
 
-    # ---------------------------------------------------------
-    #      GRID EXTRACTION (robust for your images)
-    # ---------------------------------------------------------
+with ctrl2:
+    if st.button("🔄 Reset"):
+        st.session_state.grid = np.zeros((9, 9), dtype=int)
+        st.session_state.solution = None
+        st.session_state.hinted_cells.clear()
+        st.session_state.locked_cells.clear()
+        st.session_state.erase_mode = False
 
-    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    thresh = cv2.adaptiveThreshold(
-        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV, 11, 3
-    )
+with ctrl3:
+    if st.button("🔒 Lock Input"):
+        st.session_state.locked_cells = {
+            (i, j) for i in range(9) for j in range(9)
+            if st.session_state.grid[i][j] != 0
+        }
 
-    # Find largest contour → sudoku grid
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+st.write("---")
 
-    grid_contour = None
-    for c in contours:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4:
-            grid_contour = approx
-            break
+# --------------------------------------------------
+# INPUT GRID
+# --------------------------------------------------
+for i in range(9):
+    cols = st.columns(9)
+    for j in range(9):
+        with cols[j]:
+            disabled = (i, j) in st.session_state.locked_cells
+            value = "" if st.session_state.grid[i][j] == 0 else st.session_state.grid[i][j]
 
-    if grid_contour is None:
-        st.error("❌ Could not detect puzzle grid.")
-        st.stop()
-
-    # Order grid corners
-    pts = grid_contour.reshape(4, 2)
-    s = pts.sum(axis=1)
-    diff = np.diff(pts, axis=1)
-
-    ordered = np.array([
-        pts[np.argmin(s)],  # top-left
-        pts[np.argmin(diff)],  # top-right
-        pts[np.argmax(s)],  # bottom-right
-        pts[np.argmax(diff)]   # bottom-left
-    ], dtype="float32")
-
-    # Warp to perfect square
-    side = 450
-    dst = np.array([[0, 0], [side-1, 0], [side-1, side-1], [0, side-1]], dtype="float32")
-    M = cv2.getPerspectiveTransform(ordered, dst)
-    warp = cv2.warpPerspective(gray, M, (side, side))
-
-    # ---------------------------------------------------------
-    #               OCR EXTRACT DIGITS (TESSERACT)
-    # ---------------------------------------------------------
-
-    cell = side // grid_size
-    grid = np.zeros((grid_size, grid_size), dtype=int)
-
-    for r in range(grid_size):
-        for c in range(grid_size):
-            crop = warp[r*cell:(r+1)*cell, c*cell:(c+1)*cell]
-
-            crop = cv2.resize(crop, (60, 60))
-            crop = cv2.adaptiveThreshold(
-                crop, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, 11, 2
+            user_input = st.text_input(
+                "",
+                value=value,
+                key=f"cell_{i}_{j}",
+                max_chars=1,
+                disabled=disabled
             )
 
-            text = pytesseract.image_to_string(
-                crop,
-                config='--psm 10 --oem 3 -c tessedit_char_whitelist=123456789'
-            ).strip()
+            if st.session_state.erase_mode and not disabled:
+                st.session_state.grid[i][j] = 0
+            elif user_input.isdigit() and user_input != "0" and not disabled:
+                st.session_state.grid[i][j] = int(user_input)
 
-            grid[r, c] = int(text) if text.isdigit() else 0
+# --------------------------------------------------
+# SUDOKU SOLVER LOGIC
+# --------------------------------------------------
+def is_valid(board, row, col, num):
+    if num in board[row]:
+        return False
+    if num in board[:, col]:
+        return False
+    bx, by = row // 3, col // 3
+    if num in board[bx*3:bx*3+3, by*3:by*3+3]:
+        return False
+    return True
 
-    # ---------------------------------------------------------
-    #              SHOW EXTRACTED GRID
-    # ---------------------------------------------------------
-
-    st.subheader("Extracted Grid (blue = OCR result)")
-
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(5, 5))
-    ax.imshow(np.ones((grid_size, grid_size)), cmap="gray", vmin=0, vmax=1)
-
-    for r in range(grid_size):
-        for c in range(grid_size):
-            if grid[r, c] != 0:
-                ax.text(c, r, str(grid[r, c]), color="blue", ha="center", va="center", fontsize=16)
-
-    ax.set_xticks(np.arange(-0.5, grid_size, 1))
-    ax.set_yticks(np.arange(-0.5, grid_size, 1))
-    ax.grid(color="black")
-    ax.set_xticklabels([])
-    ax.set_yticklabels([])
-
-    st.pyplot(fig)
-
-    # ---------------------------------------------------------
-    #               SUDOKU SOLVER (FAST)
-    # ---------------------------------------------------------
-
-    def valid(board, r, c, x):
-        for i in range(grid_size):
-            if board[r][i] == x or board[i][c] == x:
+def solve(board):
+    for i in range(9):
+        for j in range(9):
+            if board[i][j] == 0:
+                for num in range(1, 10):
+                    if is_valid(board, i, j, num):
+                        board[i][j] = num
+                        if solve(board):
+                            return True
+                        board[i][j] = 0
                 return False
-        br = (r // int(np.sqrt(grid_size))) * int(np.sqrt(grid_size))
-        bc = (c // int(np.sqrt(grid_size))) * int(np.sqrt(grid_size))
-        for i in range(int(np.sqrt(grid_size))):
-            for j in range(int(np.sqrt(grid_size))):
-                if board[br+i][bc+j] == x:
-                    return False
-        return True
+    return True
 
-    def solve(board):
-        for i in range(grid_size):
-            for j in range(grid_size):
-                if board[i][j] == 0:
-                    for x in range(1, grid_size+1):
-                        if valid(board, i, j, x):
-                            board[i][j] = x
-                            if solve(board):
-                                return True
-                            board[i][j] = 0
-                    return False
-        return True
+# --------------------------------------------------
+# ACTION BUTTONS
+# --------------------------------------------------
+act1, act2 = st.columns(2)
 
-    # ---------------------------------------------------------
-    #                   BUTTONS (Solve / Continue)
-    # ---------------------------------------------------------
+with act1:
+    if st.button("🧠 Solve"):
+        board = st.session_state.grid.copy()
+        if solve(board):
+            st.session_state.solution = board
+            st.success("Sudoku solved successfully!")
+        else:
+            st.error("Invalid or unsolvable Sudoku")
 
-    col1, col2 = st.columns(2)
+with act2:
+    if st.button("💡 Hint"):
+        board = st.session_state.grid.copy()
+        solved = board.copy()
 
-    with col1:
-        if st.button("Solve Puzzle"):
-            grid_copy = grid.copy()
-            if solve(grid_copy):
-                st.success("Solved Puzzle")
-
-                fig2, ax2 = plt.subplots(figsize=(5, 5))
-                for r in range(grid_size):
-                    for c in range(grid_size):
-                        color = "black" if grid[r, c] == 0 else "blue"
-                        ax2.text(c, r, str(grid_copy[r, c]), ha="center", va="center", fontsize=16, color=color)
-
-                ax2.imshow(np.ones((grid_size, grid_size)), cmap="gray", vmin=0, vmax=1)
-                ax2.set_xticks(np.arange(-0.5, grid_size, 1))
-                ax2.set_yticks(np.arange(-0.5, grid_size, 1))
-                ax2.grid(color="black")
-                ax2.set_xticklabels([])
-                ax2.set_yticklabels([])
-                st.pyplot(fig2)
+        if solve(solved):
+            available = [
+                (i, j) for i in range(9) for j in range(9)
+                if board[i][j] == 0 and (i, j) not in st.session_state.hinted_cells
+            ]
+            if available:
+                i, j = random.choice(available)
+                st.session_state.grid[i][j] = solved[i][j]
+                st.session_state.hinted_cells.add((i, j))
             else:
-                st.error("This puzzle cannot be solved.")
+                st.warning("No more hints available")
 
-    with col2:
-        if st.button("Upload New Puzzle"):
-            st.session_state.clear()
-            st.rerun()
+# --------------------------------------------------
+# DISPLAY SOLUTION
+# --------------------------------------------------
+if st.session_state.solution is not None:
+    st.write("---")
+    st.subheader("✅ Solution")
+
+    for i in range(9):
+        cols = st.columns(9)
+        for j in range(9):
+            cols[j].markdown(
+                f"<div style='text-align:center; font-size:22px; font-weight:700; color:{text};'>"
+                f"{st.session_state.solution[i][j]}</div>",
+                unsafe_allow_html=True
+)
