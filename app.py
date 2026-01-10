@@ -140,17 +140,21 @@ with right:
         st.session_state.history.clear()
         st.rerun()
 
-    st.subheader("Number Pad")
-    for i in range(1, 10, 3):
-        cols = st.columns(3)
-        for j in range(3):
-            num = i + j
-            if cols[j].button(str(num), key=f"num_{num}"):
-                place_number(num)
+    # ---------------- NUMBER PAD ----------------
+st.subheader("Number Pad")
+st.markdown('<div class="number-pad">', unsafe_allow_html=True)
+for n in range(1, 10):
+    if st.button(str(n), key=f"num-{n}"):
+        if st.session_state.selected:
+            r, c = st.session_state.selected
+            if is_valid(st.session_state.grid, r, c, n):
+                st.session_state.grid[r][c] = n
+                st.session_state.status_msg = None
+            else:
+                st.session_state.status_msg = ("error", "❌ Invalid move")
+st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown("---")
-
-    if st.button("💡 Hint", use_container_width=True):
+      if st.button("💡 Hint", use_container_width=True):
         with st.spinner("Finding hint..."):
             time.sleep(1)
             hint = get_hint(st.session_state.grid)
@@ -171,7 +175,13 @@ with right:
         st.session_state.grid = [[0]*9 for _ in range(9)]
         st.session_state.history.clear()
         st.rerun()
-
+# ---------------- STATUS MESSAGE ----------------
+if st.session_state.status_msg:
+    t, msg = st.session_state.status_msg
+    if t == "success":
+        st.success(msg)
+    else:
+        st.error(msg)
 # -------------------- INFORMATION SECTION --------------------
 st.markdown("---")
 
