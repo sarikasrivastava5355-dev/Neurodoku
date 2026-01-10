@@ -19,6 +19,36 @@ if "selected_cell" not in st.session_state:
 if "history" not in st.session_state:
     st.session_state.history = []
 
+st.markdown("""
+<style>
+/* Force proper mobile layout */
+@media (max-width: 768px) {
+    .block-container {
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+
+    .sudoku-grid {
+        display: grid;
+        grid-template-columns: repeat(9, 1fr);
+        gap: 6px;
+        justify-content: center;
+    }
+
+    .number-pad {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin-top: 10px;
+    }
+
+    .controls-stack button {
+        width: 100%;
+        margin-bottom: 8px;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
 # -------------------- SUDOKU LOGIC --------------------
 def is_valid(grid, row, col, num):
     for i in range(9):
