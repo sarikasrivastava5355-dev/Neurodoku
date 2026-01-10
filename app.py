@@ -1,7 +1,11 @@
 import streamlit as st
 import time
 import copy
+import base64
 
+def load_logo_base64(path):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
 # -------------------- PAGE CONFIG --------------------
 st.set_page_config(page_title="NEURODOKU", layout="wide")
 
@@ -55,9 +59,11 @@ def place_number(num):
     st.session_state.grid[r][c] = num
     st.rerun()
 
-# -------------------- HEADER (TRUE CENTER) --------------------
+# -------------------- HEADER (PERFECT CENTER + VISIBLE LOGO) --------------------
+logo_base64 = load_logo_base64("logo.png")
+
 st.markdown(
-    """
+    f"""
     <div style="
         display: flex;
         flex-direction: column;
@@ -65,12 +71,12 @@ st.markdown(
         justify-content: center;
         margin-bottom: 20px;
     ">
-        <img src="logo.png" width="100" style="display:block; margin:auto;" />
+        <img src="data:image/png;base64,{logo_base64}" width="100"/>
         <h1 style="text-align:center; margin-top:10px;">NEURODOKU</h1>
     </div>
     """,
     unsafe_allow_html=True
-                    )
+)
 
 # -------------------- MAIN LAYOUT --------------------
 left, right = st.columns([3, 1])
