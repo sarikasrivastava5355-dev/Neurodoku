@@ -1,221 +1,208 @@
 import streamlit as st
-import time
 import copy
-import base64
+import time
 
-def load_logo_base64(path):
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode()
-# -------------------- PAGE CONFIG --------------------
-st.set_page_config(page_title="NEURODOKU", layout="wide")
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(page_title="Neurodoku", layout="centered")
 
-# -------------------- SESSION STATE --------------------
+# ---------------- SESSION STATE ----------------
 if "grid" not in st.session_state:
     st.session_state.grid = [[0]*9 for _ in range(9)]
 
-if "selected_cell" not in st.session_state:
-    st.session_state.selected_cell = (0, 0)
+if "selected" not in st.session_state:
+    st.session_state.selected = None
+
+if "solution" not in st.session_state:
+    st.session_state.solution = None
+
+if "hinted" not in st.session_state:
+    st.session_state.hinted = set()
 
 if "history" not in st.session_state:
     st.session_state.history = []
 
+if "status" not in st.session_state:
+    st.session_state.status = None
+
+# ---------------- CSS ----------------
 st.markdown("""
 <style>
-/* Force proper mobile layout */
+.center {
+    text-align: center;
+}
+
+.sudoku-grid {
+    display: grid;
+    grid-template-columns: repeat(9, 42px);
+    gap: 6px;
+    justify-content: center;
+}
+
+.sudoku-grid button {
+    width: 42px !important;
+    height: 42px !important;
+    font-size: 18px !important;
+}
+
+.number-pad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+}
+
 @media (max-width: 768px) {
-    .block-container {
-        padding-left: 1rem;
-        padding-right: 1rem;
-    }
-
     .sudoku-grid {
-        display: grid;
         grid-template-columns: repeat(9, 1fr);
-        gap: 6px;
-        justify-content: center;
-    }
-
-    .number-pad {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 10px;
-        margin-top: 10px;
-    }
-
-    .controls-stack button {
-        width: 100%;
-        margin-bottom: 8px;
     }
 }
 </style>
 """, unsafe_allow_html=True)
-# -------------------- SUDOKU LOGIC --------------------
-def is_valid(grid, row, col, num):
+
+# ---------------- LOGO + TITLE ----------------
+st.markdown("""
+<div class="center">
+    <img src="logo.png" width="90">
+    <h1>NEURODOKU</h1>
+</div>
+""", unsafe_allow_html=True)
+
+# ---------------- VALIDATION ----------------
+def is_valid(grid, r, c, n):
     for i in range(9):
-        if grid[row][i] == num or grid[i][col] == num:
+        if grid[r][i] == n or grid[i][c] == n:
             return False
-    box_x, box_y = col // 3, row // 3
-    for i in range(box_y*3, box_y*3+3):
-        for j in range(box_x*3, box_x*3+3):
-            if grid[i][j] == num:
+    br, bc = r//3*3, c//3*3
+    for i in range(3):
+        for j in range(3):
+            if grid[br+i][bc+j] == n:
                 return False
     return True
 
-def solve_sudoku(grid):
-    for row in range(9):
-        for col in range(9):
-            if grid[row][col] == 0:
-                for num in range(1, 10):
-                    if is_valid(grid, row, col, num):
-                        grid[row][col] = num
-                        if solve_sudoku(grid):
-                            return True
-                        grid[row][col] = 0
-                return False
-    return True
-
-def get_hint(grid):
-    temp = copy.deepcopy(grid)
-    if solve_sudoku(temp):
-        for r in range(9):
-            for c in range(9):
-                if grid[r][c] == 0:
-                    return r, c, temp[r][c]
-    return None
-
-def place_number(num):
-    r, c = st.session_state.selected_cell
-    st.session_state.history.append(copy.deepcopy(st.session_state.grid))
-    st.session_state.grid[r][c] = num
-    st.rerun()
-
-# -------------------- HEADER (PERFECT CENTER + VISIBLE LOGO) --------------------
-logo_base64 = load_logo_base64("logo.png")
-
-st.markdown(
-    f"""
-    <div style="
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        margin-bottom: 20px;
-    ">
-        <img src="data:image/png;base64,{logo_base64}" width="100"/>
-        <h1 style="text-align:center; margin-top:10px;">NEURODOKU</h1>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-# -------------------- MAIN LAYOUT --------------------
-left, right = st.columns([3, 1])
-
-# -------------------- SUDOKU GRID --------------------
-with left:
-    st.subheader("Sudoku Grid")
+# ---------------- SOLVER ----------------
+def solve(grid):
     for r in range(9):
-        cols = st.columns(9)
+        for c in range(9):
+            if grid[r][c] == 0:
+                for n in range(1, 10):
+                    if is_valid(grid, r, c, n):
+                        grid[r][c] = n
+                        if solve(grid):
+                            return True
+                        grid[r][c] = 0
+                return False
+    return True
+
+# ---------------- MAIN LAYOUT ----------------
+grid_col, control_col = st.columns([3, 2])
+
+# ---------------- GRID ----------------
+with grid_col:
+    st.subheader("Sudoku Grid")
+    st.markdown('<div class="sudoku-grid">', unsafe_allow_html=True)
+
+    for r in range(9):
         for c in range(9):
             value = st.session_state.grid[r][c]
             label = str(value) if value != 0 else ""
-            if cols[c].button(label, key=f"cell_{r}_{c}"):
-                st.session_state.selected_cell = (r, c)
-                st.rerun()
+            if st.button(label, key=f"cell-{r}-{c}"):
+                st.session_state.selected = (r, c)
 
-# ---------------- CONTROLS + NUMBER PAD + SOLVE ----------------
+    st.markdown('</div>', unsafe_allow_html=True)
 
+# ---------------- CONTROLS ----------------
 st.subheader("Controls")
 
-# ---- REQUIRED STATES ----
-if "history" not in st.session_state:
-    st.session_state.history = []
+edit_col, solve_col = st.columns(2)
 
-if "status_msg" not in st.session_state:
-    st.session_state.status_msg = None
+# ---------- EDIT CONTROLS ----------
+with edit_col:
+    st.markdown("### ✏️ Edit")
 
-# ---- CONTROL BUTTONS ----
-if st.button("↩️ Undo", use_container_width=True):
-    if st.session_state.history:
-        st.session_state.grid = st.session_state.history.pop()
+    if st.button("↩️ Undo", use_container_width=True):
+        if st.session_state.history:
+            st.session_state.grid = st.session_state.history.pop()
 
-if st.button("🧹 Erase", use_container_width=True):
-    if st.session_state.selected:
-        r, c = st.session_state.selected
-        st.session_state.history.append(copy.deepcopy(st.session_state.grid))
-        st.session_state.grid[r][c] = 0
+    if st.button("🧹 Erase", use_container_width=True):
+        if st.session_state.selected:
+            r, c = st.session_state.selected
+            st.session_state.history.append(copy.deepcopy(st.session_state.grid))
+            st.session_state.grid[r][c] = 0
 
-if st.button("🔄 Restart", use_container_width=True):
-    st.session_state.grid = [[0]*9 for _ in range(9)]
-    st.session_state.history = []
-    st.session_state.hinted = set()
-    st.session_state.solution = None
-    st.session_state.selected = None
-    st.session_state.status_msg = ("success", "Puzzle restarted successfully")
+    if st.button("🔄 Clear All", use_container_width=True):
+        st.session_state.grid = [[0]*9 for _ in range(9)]
+        st.session_state.history = []
+        st.session_state.hinted = set()
+        st.session_state.solution = None
+        st.session_state.selected = None
+        st.session_state.status = ("success", "Grid cleared")
 
-st.markdown("---")
+# ---------- SOLVE CONTROLS ----------
+with solve_col:
+    st.markdown("### 🤖 AI Assist")
 
-# ---- SOLVE & HINT ----
-if st.button("✅ Solve", use_container_width=True):
-    board_copy = copy.deepcopy(st.session_state.grid)
-    time.sleep(2)
-    if solve(board_copy):
-        st.session_state.grid = board_copy
-        st.session_state.status_msg = ("success", "Sudoku solved successfully ✅")
-    else:
-        st.session_state.status_msg = ("error", "No solution exists ❌")
-
-if st.button("💡 Hint", use_container_width=True):
-    time.sleep(2)
-
-    if not st.session_state.solution:
-        sol = copy.deepcopy(st.session_state.grid)
-        if solve(sol):
+    if st.button("💡 Hint", use_container_width=True):
+        if not st.session_state.solution:
+            sol = copy.deepcopy(st.session_state.grid)
+            solve(sol)
             st.session_state.solution = sol
 
-    for r in range(9):
-        for c in range(9):
-            if (
-                st.session_state.grid[r][c] == 0
-                and (r, c) not in st.session_state.hinted
-            ):
-                st.session_state.history.append(copy.deepcopy(st.session_state.grid))
-                st.session_state.grid[r][c] = st.session_state.solution[r][c]
-                st.session_state.hinted.add((r, c))
-                st.session_state.status_msg = ("success", "Hint applied successfully 💡")
-                break
-        else:
-            continue
-        break
+        for r in range(9):
+            for c in range(9):
+                if st.session_state.grid[r][c] == 0 and (r, c) not in st.session_state.hinted:
+                    st.session_state.history.append(copy.deepcopy(st.session_state.grid))
+                    st.session_state.grid[r][c] = st.session_state.solution[r][c]
+                    st.session_state.hinted.add((r, c))
+                    st.session_state.status = ("success", "Hint applied")
+                    break
+            else:
+                continue
+            break
 
+    if st.button("✅ Solve", use_container_width=True):
+        temp = copy.deepcopy(st.session_state.grid)
+        if solve(temp):
+            st.session_state.grid = temp
+            st.session_state.status = ("success", "Puzzle solved")
+        else:
+            st.session_state.status = ("error", "No solution exists")
+
+    if st.button("🔁 Restart", use_container_width=True):
+        st.session_state.grid = [[0]*9 for _ in range(9)]
+        st.session_state.history = []
+        st.session_state.hinted = set()
+        st.session_state.solution = None
+        st.session_state.selected = None
+        st.session_state.status = ("success", "Game restarted")
+
+# ---------------- NUMBER PAD ----------------
 st.markdown("---")
 st.subheader("Number Pad")
 
-# ---- NUMBER PAD ----
-pad = st.columns(3)
+num_cols = st.columns(3)
 num = 1
 
-for i in range(3):
-    for j in range(3):
-        if pad[j].button(str(num), key=f"num-{num}", use_container_width=True):
-            if st.session_state.selected:
-                r, c = st.session_state.selected
-                st.session_state.history.append(copy.deepcopy(st.session_state.grid))
-
-                if is_valid(st.session_state.grid, r, c, num):
-                    st.session_state.grid[r][c] = num
-                    st.session_state.status_msg = ("success", f"Placed {num}")
-                else:
-                    st.session_state.status_msg = ("error", "❌ Invalid move")
+for row in range(3):
+    for col in range(3):
+        with num_cols[col]:
+            if st.button(str(num), key=f"num-{num}", use_container_width=True):
+                if st.session_state.selected:
+                    r, c = st.session_state.selected
+                    if is_valid(st.session_state.grid, r, c, num):
+                        st.session_state.history.append(copy.deepcopy(st.session_state.grid))
+                        st.session_state.grid[r][c] = num
+                        st.session_state.status = ("success", f"Placed {num}")
+                    else:
+                        st.session_state.status = ("error", "Invalid move")
         num += 1
 
-# ---- STATUS MESSAGE ----
-if st.session_state.status_msg:
-    t, msg = st.session_state.status_msg
+# ---------------- STATUS MESSAGE ----------------
+if st.session_state.status:
+    t, msg = st.session_state.status
     if t == "success":
         st.success(msg)
     else:
         st.error(msg)
+
 # -------------------- INFORMATION SECTION --------------------
 st.markdown("---")
 
