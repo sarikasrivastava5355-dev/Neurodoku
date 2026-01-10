@@ -123,59 +123,93 @@ with left:
                 st.session_state.selected_cell = (r, c)
                 st.rerun()
 
-# -------------------- CONTROLS & NUMBER PAD --------------------
-with right:
-    st.subheader("Controls")
+# ---------------- CONTROLS + NUMBER PAD + SOLVE ----------------
 
-    if st.button("↩ Undo"):
-        if st.session_state.history:
-            st.session_state.grid = st.session_state.history.pop()
-            st.rerun()
+st.subheader("Controls")
 
-    if st.button("🧹 Erase"):
-        place_number(0)
+# ---- REQUIRED STATES ----
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-    if st.button("🗑 Clear All"):
-        st.session_state.grid = [[0]*9 for _ in range(9)]
-        st.session_state.history.clear()
-        st.rerun()
+if "status_msg" not in st.session_state:
+    st.session_state.status_msg = None
 
-    # ---------------- NUMBER PAD ----------------
+# ---- CONTROL BUTTONS ----
+if st.button("↩️ Undo", use_container_width=True):
+    if st.session_state.history:
+        st.session_state.grid = st.session_state.history.pop()
+
+if st.button("🧹 Erase", use_container_width=True):
+    if st.session_state.selected:
+        r, c = st.session_state.selected
+        st.session_state.history.append(copy.deepcopy(st.session_state.grid))
+        st.session_state.grid[r][c] = 0
+
+if st.button("🔄 Restart", use_container_width=True):
+    st.session_state.grid = [[0]*9 for _ in range(9)]
+    st.session_state.history = []
+    st.session_state.hinted = set()
+    st.session_state.solution = None
+    st.session_state.selected = None
+    st.session_state.status_msg = ("success", "Puzzle restarted successfully")
+
+st.markdown("---")
+
+# ---- SOLVE & HINT ----
+if st.button("✅ Solve", use_container_width=True):
+    board_copy = copy.deepcopy(st.session_state.grid)
+    time.sleep(2)
+    if solve(board_copy):
+        st.session_state.grid = board_copy
+        st.session_state.status_msg = ("success", "Sudoku solved successfully ✅")
+    else:
+        st.session_state.status_msg = ("error", "No solution exists ❌")
+
+if st.button("💡 Hint", use_container_width=True):
+    time.sleep(2)
+
+    if not st.session_state.solution:
+        sol = copy.deepcopy(st.session_state.grid)
+        if solve(sol):
+            st.session_state.solution = sol
+
+    for r in range(9):
+        for c in range(9):
+            if (
+                st.session_state.grid[r][c] == 0
+                and (r, c) not in st.session_state.hinted
+            ):
+                st.session_state.history.append(copy.deepcopy(st.session_state.grid))
+                st.session_state.grid[r][c] = st.session_state.solution[r][c]
+                st.session_state.hinted.add((r, c))
+                st.session_state.status_msg = ("success", "Hint applied successfully 💡")
+                break
+        else:
+            continue
+        break
+
+st.markdown("---")
 st.subheader("Number Pad")
-st.markdown('<div class="number-pad">', unsafe_allow_html=True)
-for n in range(1, 10):
-    if st.button(str(n), key=f"num-{n}"):
-        if st.session_state.selected:
-            r, c = st.session_state.selected
-            if is_valid(st.session_state.grid, r, c, n):
-                st.session_state.grid[r][c] = n
-                st.session_state.status_msg = None
-            else:
-                st.session_state.status_msg = ("error", "❌ Invalid move")
-st.markdown('</div>', unsafe_allow_html=True)
 
-      if st.button("💡 Hint", use_container_width=True):
-        with st.spinner("Finding hint..."):
-            time.sleep(1)
-            hint = get_hint(st.session_state.grid)
-            if hint:
-                r, c, v = hint
-                st.session_state.grid[r][c] = v
-        st.rerun()
+# ---- NUMBER PAD ----
+pad = st.columns(3)
+num = 1
 
-    if st.button("✅ Solve", use_container_width=True):
-        with st.spinner("Solving Sudoku..."):
-            time.sleep(1.5)
-            solved = copy.deepcopy(st.session_state.grid)
-            solve_sudoku(solved)
-            st.session_state.grid = solved
-        st.rerun()
+for i in range(3):
+    for j in range(3):
+        if pad[j].button(str(num), key=f"num-{num}", use_container_width=True):
+            if st.session_state.selected:
+                r, c = st.session_state.selected
+                st.session_state.history.append(copy.deepcopy(st.session_state.grid))
 
-    if st.button("🔁 Restart", use_container_width=True):
-        st.session_state.grid = [[0]*9 for _ in range(9)]
-        st.session_state.history.clear()
-        st.rerun()
-# ---------------- STATUS MESSAGE ----------------
+                if is_valid(st.session_state.grid, r, c, num):
+                    st.session_state.grid[r][c] = num
+                    st.session_state.status_msg = ("success", f"Placed {num}")
+                else:
+                    st.session_state.status_msg = ("error", "❌ Invalid move")
+        num += 1
+
+# ---- STATUS MESSAGE ----
 if st.session_state.status_msg:
     t, msg = st.session_state.status_msg
     if t == "success":
