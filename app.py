@@ -1,170 +1,151 @@
 import streamlit as st
 import pandas as pd
-import copy
 
-# ---------------- PAGE CONFIG ----------------
 st.set_page_config(page_title="NEURODOKU", layout="wide")
 
-# ---------------- LOGO + TITLE ----------------
-st.markdown(
-    """
-    <div style="text-align:center;">
-        <img src="https://github.com/sarikasrivastava5355-dev/Neurodoku/blob/305099c891349845486fe0f0f6b85faaf19d5ff6/logo.png" width="90">
-        <h1>NEURODOKU</h1>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+# ---------- HEADER ----------
+st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
+st.image("logo.png", width=90)
+st.markdown("<h1>NEURODOKU</h1>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------------- SESSION STATE ----------------
+# ---------- SESSION STATE ----------
 if "grid" not in st.session_state:
-    st.session_state.grid = pd.DataFrame([[0]*9 for _ in range(9)])
-
-if "solution" not in st.session_state:
-    st.session_state.solution = None
-
+    st.session_state.grid = [[0]*9 for _ in range(9)]
+if "selected" not in st.session_state:
+    st.session_state.selected = (0, 0)
 if "history" not in st.session_state:
     st.session_state.history = []
+if "hinted" not in st.session_state:
+    st.session_state.hinted = set()
+if "hint_used" not in st.session_state:
+    st.session_state.hint_used = False
 
-if "selected_cell" not in st.session_state:
-    st.session_state.selected_cell = (0, 0)
-
-if "hinted_cells" not in st.session_state:
-    st.session_state.hinted_cells = set()
-
-# ---------------- SUDOKU LOGIC ----------------
-def is_valid(grid, r, c, num):
-    if num in grid.iloc[r].values:
-        return False
-    if num in grid.iloc[:, c].values:
-        return False
+# ---------- LOGIC ----------
+def valid(grid, r, c, n):
+    if n in grid[r]: return False
+    if n in [grid[i][c] for i in range(9)]: return False
     br, bc = (r//3)*3, (c//3)*3
-    if num in grid.iloc[br:br+3, bc:bc+3].values:
-        return False
-    return True
-
-def solve_sudoku(grid):
-    for r in range(9):
-        for c in range(9):
-            if grid.iat[r, c] == 0:
-                for num in range(1, 10):
-                    if is_valid(grid, r, c, num):
-                        grid.iat[r, c] = num
-                        if solve_sudoku(grid):
-                            return True
-                        grid.iat[r, c] = 0
+    for i in range(br, br+3):
+        for j in range(bc, bc+3):
+            if grid[i][j] == n:
                 return False
     return True
 
-# ---------------- LAYOUT ----------------
-left, right = st.columns([3, 1])
+def solve(grid):
+    for r in range(9):
+        for c in range(9):
+            if grid[r][c] == 0:
+                for n in range(1,10):
+                    if valid(grid, r, c, n):
+                        grid[r][c] = n
+                        if solve(grid):
+                            return True
+                        grid[r][c] = 0
+                return False
+    return True
 
-# ---------------- GRID ----------------
+# ---------- LAYOUT ----------
+left, right = st.columns([3,1])
+
+# ---------- GRID ----------
 with left:
     st.subheader("Sudoku Grid")
-
     for r in range(9):
         cols = st.columns(9)
         for c in range(9):
-            val = st.session_state.grid.iat[r, c]
-            label = str(val) if val != 0 else ""
-            if cols[c].button(label, key=f"cell-{r}-{c}", use_container_width=True):
-                st.session_state.selected_cell = (r, c)
+            v = st.session_state.grid[r][c]
+            label = str(v) if v != 0 else ""
+            if cols[c].button(label, key=f"cell{r}{c}", use_container_width=True):
+                st.session_state.selected = (r, c)
 
-# ---------------- CONTROLS ----------------
+# ---------- CONTROLS ----------
 with right:
     st.subheader("Controls")
 
-    c1, c2, c3 = st.columns(3)
-
-    if c1.button("↩ Undo"):
+    if st.button("↩ Undo", use_container_width=True):
         if st.session_state.history:
             st.session_state.grid = st.session_state.history.pop()
 
-    if c2.button("🧹 Erase"):
-        r, c = st.session_state.selected_cell
-        st.session_state.history.append(st.session_state.grid.copy())
-        st.session_state.grid.iat[r, c] = 0
+    if st.button("🧹 Erase", use_container_width=True):
+        r,c = st.session_state.selected
+        st.session_state.history.append([row[:] for row in st.session_state.grid])
+        st.session_state.grid[r][c] = 0
 
-    if c3.button("🗑 Clear All"):
-        st.session_state.grid = pd.DataFrame([[0]*9 for _ in range(9)])
+    if st.button("🗑 Clear All", use_container_width=True):
+        st.session_state.grid = [[0]*9 for _ in range(9)]
         st.session_state.history.clear()
-        st.session_state.hinted_cells.clear()
-        st.session_state.solution = None
+        st.session_state.hinted.clear()
+        st.session_state.hint_used = False
 
     st.markdown("### Number Pad")
-
-    for i in range(0, 9, 3):
+    for i in range(0,9,3):
         row = st.columns(3)
         for j in range(3):
-            num = i + j + 1
+            num = i+j+1
             if row[j].button(str(num), use_container_width=True):
-                r, c = st.session_state.selected_cell
-                if is_valid(st.session_state.grid, r, c, num):
-                    st.session_state.history.append(st.session_state.grid.copy())
-                    st.session_state.grid.iat[r, c] = num
+                r,c = st.session_state.selected
+                if valid(st.session_state.grid, r, c, num):
+                    st.session_state.history.append([row[:] for row in st.session_state.grid])
+                    st.session_state.grid[r][c] = num
                 else:
                     st.warning("Invalid move")
 
     st.markdown("---")
 
     if st.button("💡 Hint", use_container_width=True):
-        temp = st.session_state.grid.copy()
-        solved = temp.copy()
-        if solve_sudoku(solved):
-            for r in range(9):
-                for c in range(9):
-                    if temp.iat[r, c] == 0 and (r, c) not in st.session_state.hinted_cells:
-                        st.session_state.history.append(st.session_state.grid.copy())
-                        st.session_state.grid.iat[r, c] = solved.iat[r, c]
-                        st.session_state.hinted_cells.add((r, c))
-                        st.success("Hint applied successfully!")
-                        st.stop()
-            st.info("No more hints available")
+        temp = [row[:] for row in st.session_state.grid]
+        solve(temp)
+        for r in range(9):
+            for c in range(9):
+                if st.session_state.grid[r][c] == 0 and (r,c) not in st.session_state.hinted:
+                    st.session_state.history.append([row[:] for row in st.session_state.grid])
+                    st.session_state.grid[r][c] = temp[r][c]
+                    st.session_state.hinted.add((r,c))
+                    st.session_state.hint_used = True
+                    st.success("Hint applied successfully!")
+                    break
+            else:
+                continue
+            break
+
+    if st.session_state.hint_used:
+        if st.button("More Hint", use_container_width=True):
+            st.session_state.hint_used = False
+            st.experimental_rerun()
+
+        if st.button("Solve Full Puzzle", use_container_width=True):
+            solve(st.session_state.grid)
+            st.success("Puzzle solved successfully!")
+
+        if st.button("Restart", use_container_width=True):
+            st.session_state.grid = [[0]*9 for _ in range(9)]
+            st.session_state.history.clear()
+            st.session_state.hinted.clear()
+            st.session_state.hint_used = False
 
     if st.button("✅ Solve", use_container_width=True):
-        st.session_state.history.append(st.session_state.grid.copy())
-        solved = st.session_state.grid.copy()
-        if solve_sudoku(solved):
-            st.session_state.grid = solved
-            st.success("Success! The solution was found.")
+        solve(st.session_state.grid)
+        st.success("Success! The solution was found.")
 
-    if st.button("🔁 Restart", use_container_width=True):
-        st.session_state.grid = pd.DataFrame([[0]*9 for _ in range(9)])
-        st.session_state.history.clear()
-        st.session_state.hinted_cells.clear()
-        st.session_state.solution = None
-
-# ---------------- CONTENT SECTION ----------------
+# ---------- INFO SECTION ----------
 st.markdown("---")
-st.header("❓ What is Neurodoku?")
-st.write(
-    "Neurodoku is an intelligent Sudoku-solving web application that assists users "
-    "by validating moves, providing hints, and generating complete solutions."
-)
 
 st.header("📘 How to use Neurodoku?")
 st.write("""
-1. Click on a cell in the grid  
-2. Enter numbers using the Number Pad  
-3. Invalid moves are blocked  
-4. Use Hint for guidance  
-5. Use Solve to complete the puzzle  
-6. Restart anytime  
+• Click a cell  
+• Enter digits using Number Pad  
+• Use Hint for guidance  
+• Solve for full solution  
+• Restart anytime  
 """)
+
+st.header("❓ What is Neurodoku?")
+st.write("Neurodoku is an intelligent Sudoku-solving web application that assists users by validating moves, providing hints, and generating complete solutions.")
 
 st.header("🤖 How is Neurodoku an AI Model?")
 st.write("""
-Neurodoku is an AI-based system because it simulates human-like logical reasoning.
-It uses constraint satisfaction, backtracking search, and rule-based decision making
-to evaluate valid moves and reach optimal solutions.
-""")
-
-st.markdown("### 🔍 Why Neurodoku?")
-st.write("""
-• Logical Reasoning  
-• Decision Making  
-• Automation  
-• Problem Solving  
-• Human-like Strategy Simulation  
+Neurodoku mimics human logical reasoning using constraint satisfaction and backtracking.
+It evaluates possibilities, eliminates invalid options, and makes optimal decisions —
+core characteristics of Artificial Intelligence systems.
 """)
