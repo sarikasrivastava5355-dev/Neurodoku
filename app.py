@@ -9,7 +9,7 @@ st.set_page_config(page_title="NEURODOKU", layout="wide")
 st.markdown(
     """
     <div style="text-align:center;">
-        <img src="https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/logo.png" width="90">
+        <img src="https://github.com/sarikasrivastava5355-dev/Neurodoku/blob/305099c891349845486fe0f0f6b85faaf19d5ff6/logo.png" width="90">
         <h1>NEURODOKU</h1>
     </div>
     """,
