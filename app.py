@@ -55,11 +55,15 @@ def place_number(num):
     st.session_state.grid[r][c] = num
     st.rerun()
 
-# -------------------- HEADER --------------------
-st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
-st.image("logo.png", width=90)
-st.markdown("<h1>NEURODOKU</h1>", unsafe_allow_html=True)
-st.markdown("</div>", unsafe_allow_html=True)
+# -------------------- HEADER (PERFECTLY CENTERED) --------------------
+col1, col2, col3 = st.columns([1, 2, 1])
+
+with col2:
+    st.image("logo.png", width=100)
+    st.markdown(
+        "<h1 style='text-align:center;'>NEURODOKU</h1>",
+        unsafe_allow_html=True
+            )
 
 # -------------------- MAIN LAYOUT --------------------
 left, right = st.columns([3, 1])
